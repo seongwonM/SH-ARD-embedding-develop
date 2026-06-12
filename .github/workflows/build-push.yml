@@ -1,0 +1,49 @@
+name: Build & Push Docker Image
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "bench/**"
+      - "deploy/Dockerfile"
+      - "deploy/requirements.txt"
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository_owner }}/embedding-bench-qdrant
+
+jobs:
+  build-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: deploy/Dockerfile
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+
+      # RunPod pod 재시작 (RUNPOD_API_KEY secret 등록 시 활성화)
+      - name: Restart RunPod pod
+        if: ${{ secrets.RUNPOD_POD_ID != '' }}
+        run: |
+          curl -s -X POST "https://api.runpod.io/v2/pod/${{ secrets.RUNPOD_POD_ID }}/stop" \
+            -H "Authorization: Bearer ${{ secrets.RUNPOD_API_KEY }}" && sleep 5
+          curl -s -X POST "https://api.runpod.io/v2/pod/${{ secrets.RUNPOD_POD_ID }}/start" \
+            -H "Authorization: Bearer ${{ secrets.RUNPOD_API_KEY }}"
+          echo "Pod 재시작 요청 완료"

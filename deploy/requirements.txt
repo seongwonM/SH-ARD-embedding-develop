@@ -1,0 +1,8 @@
+mteb>=2.0.0
+sentence-transformers>=5.5.1
+transformers>=4.51.0
+qdrant-client>=1.9.0
+pytrec-eval-terrier
+numpy
+accelerate>=0.30.0
+psutil
