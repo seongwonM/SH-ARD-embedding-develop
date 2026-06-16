@@ -27,6 +27,9 @@ import os
 import re
 import sys
 import time
+import warnings
+
+import mteb
 
 from bench.data_loader import load_combined, _TASK_CONFIGS
 
@@ -52,20 +55,18 @@ def _mem(label: str = "") -> None:
     parts = []
     try:
         import psutil
-        parts.append(f"CPU RSS={psutil.Process().memory_info().rss / 1e9:.2f}GB")
+        parts.append(f"CPU={psutil.Process().memory_info().rss / 1e9:.1f}GB")
     except ImportError:
         pass
     try:
         import torch
         if torch.cuda.is_available():
-            parts.append(
-                f"GPU alloc={torch.cuda.memory_allocated()/1e9:.2f}GB "
-                f"reserved={torch.cuda.memory_reserved()/1e9:.2f}GB"
-            )
+            parts.append(f"GPU={torch.cuda.memory_allocated()/1e9:.1f}GB")
     except ImportError:
         pass
-    tag = f"[MEM] {label}: " if label else "[MEM] "
-    print(tag + ("  ".join(parts) if parts else "(psutil/torch 없음)"), flush=True)
+    if parts:
+        tag = f"[MEM:{label}] " if label else "[MEM] "
+        print(tag + " ".join(parts), flush=True)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -144,8 +145,8 @@ def _build_combined_corpus(tasks: list) -> tuple[dict, dict, dict, list[str]]:
     for task in tasks:
         name   = task.metadata.name
         prefix = name + "__"
-        print(f"  [로딩] {name}", flush=True)
         corpus, queries, qrels = _load_task_data(task)
+        print(f"  [로딩] {name}: corpus={len(corpus):,}  queries={len(queries):,}", flush=True)
 
         for did, doc in corpus.items():
             combined_corpus[prefix + did] = doc
@@ -153,8 +154,6 @@ def _build_combined_corpus(tasks: list) -> tuple[dict, dict, dict, list[str]]:
             combined_queries[prefix + qid] = text
         for qid, rels in qrels.items():
             combined_qrels[prefix + qid] = {prefix + did: s for did, s in rels.items()}
-
-        _mem(f"  로딩 후 ({name}, 누적 corpus={len(combined_corpus):,})")
 
     print(
         f"  [합산] corpus {len(combined_corpus):,}건 · "
@@ -205,6 +204,7 @@ def _index_corpus(
     print(f"  Qdrant 컬렉션 생성: {collection_name}  dim={embed_dim}", flush=True)
 
     n_chunks = math.ceil(n_total / _UPSERT_CHUNK)
+    _log_every = max(1, n_chunks // 4)
     for ci in range(n_chunks):
         s = ci * _UPSERT_CHUNK
         e = min(s + _UPSERT_CHUNK, n_total)
@@ -217,7 +217,7 @@ def _index_corpus(
         embs = model.encode(
             chunk_texts,
             batch_size=batch_size,
-            show_progress_bar=(ci == 0),
+            show_progress_bar=False,
             normalize_embeddings=True,
         )
 
@@ -234,8 +234,8 @@ def _index_corpus(
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
-        if (ci + 1) % 10 == 0 or ci + 1 == n_chunks:
-            _mem(f"  upsert {e:,}/{n_total:,}")
+        if (ci + 1) % _log_every == 0 or ci + 1 == n_chunks:
+            print(f"  upsert {e:,}/{n_total:,}", flush=True)
 
     print(f"  인덱싱 완료: {n_total:,}건 → {collection_name}", flush=True)
 
@@ -259,16 +259,14 @@ def _search_and_evaluate(
     q_texts = [queries[qid] for qid in q_ids]
 
     print(f"  query 인코딩 ({len(q_ids):,}건)...", flush=True)
-    _mem("query encode 전")
     q_embs = model.encode(
         q_texts,
         batch_size=batch_size,
-        show_progress_bar=True,
+        show_progress_bar=False,
         normalize_embeddings=True,
     )
     del q_texts
     gc.collect()
-    _mem("query encode 후")
 
     print(f"  Qdrant 검색 ({len(q_ids):,} queries, top-{top_k})...", flush=True)
     run: dict = {}
@@ -287,7 +285,6 @@ def _search_and_evaluate(
 
     del q_embs
     gc.collect()
-    _mem("검색 완료")
 
     binary_qrels = {
         qid: {did: 1 for did, s in rels.items() if s >= 1}
@@ -340,13 +337,12 @@ def _run_model(
     print(f"  Qdrant 컬렉션: {collection_name}")
     print(f"{'='*64}")
 
-    _mem("모델 로드 전")
     dtype = _DTYPE_MAP.get(model_dtype)
     model = SentenceTransformer(
         model_id,
         model_kwargs={"torch_dtype": getattr(torch, dtype)} if dtype else None,
     )
-    _mem("모델 로드 후")
+    _mem("로드")
 
     if _collection_exists(client, collection_name):
         n_pts = client.get_collection(collection_name).points_count
@@ -356,7 +352,6 @@ def _run_model(
         t0 = time.time()
         _index_corpus(client, collection_name, model, combined_corpus, batch_size)
         print(f"  인덱싱 완료 ({time.time()-t0:.0f}s)", flush=True)
-        _mem("인덱싱 완료")
 
     t0 = time.time()
     metrics = _search_and_evaluate(

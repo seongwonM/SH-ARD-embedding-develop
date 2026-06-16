@@ -20,7 +20,7 @@ COPY bench ./bench
 CMD ["bash", "-c", \
      "REPO=https://github.com/seongwonM/SH-ARD-embedding-develop.git; \
       TARGET=${GH_TOKEN:+https://${GH_TOKEN}@github.com/seongwonM/SH-ARD-embedding-develop.git}; \
-      git clone --depth=1 ${TARGET:-$REPO} /tmp/latest 2>&1 \
+      rm -rf /tmp/latest && git clone --depth=1 ${TARGET:-$REPO} /tmp/latest 2>&1 \
         && cp -rf /tmp/latest/bench /app/ \
         && echo '[startup] 코드 업데이트 완료' \
         || echo '[startup] git clone 실패 — 빌드된 코드로 실행'; \
