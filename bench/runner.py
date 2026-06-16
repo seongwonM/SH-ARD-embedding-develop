@@ -35,9 +35,9 @@ from bench.data_loader import _TASK_CONFIGS
 
 _DEFAULT_MODELS = [
     "BAAI/bge-m3",
-    "Qwen/Qwen3-0.6B",
-    "Qwen/Qwen3-4B",
-    "Qwen/Qwen3-8B",
+    "Qwen/Qwen3-Embedding-0.6B",
+    "Qwen/Qwen3-Embedding-4B",
+    "Qwen/Qwen3-Embedding-8B",
 ]
 
 _KO_RETRIEVAL_TASKS = list(_TASK_CONFIGS.keys())
@@ -199,14 +199,14 @@ def _index_corpus(
     embed_dim   = model.encode([sample_text], show_progress_bar=False).shape[1]
 
     # on_disk=True: 벡터를 RAM에 올리지 않고 디스크에서 읽어 MIRACL×대형모델 조합 RAM OOM 방지
-    # hnsw_config: ef_construct 높이면 색인 품질 향상 (기본 100 → 200)
+    # 초기 m=0: 대량 upsert 중 HNSW 재구성 thrashing 방지 → 완료 후 m=16 복원
     client.create_collection(
         collection_name=collection_name,
         vectors_config=VectorParams(size=embed_dim, distance=Distance.COSINE, on_disk=True),
-        hnsw_config=HnswConfigDiff(m=16, ef_construct=200),
+        hnsw_config=HnswConfigDiff(m=0),
         on_disk_payload=True,
     )
-    print(f"  Qdrant 컬렉션 생성: {collection_name}  dim={embed_dim}", flush=True)
+    print(f"  Qdrant 컬렉션 생성: {collection_name}  dim={embed_dim}  (HNSW 비활성 중)", flush=True)
 
     n_chunks = math.ceil(n_total / _UPSERT_CHUNK)
     _log_every = max(1, n_chunks // 10)
@@ -249,7 +249,12 @@ def _index_corpus(
         if (ci + 1) % _log_every == 0 or ci + 1 == n_chunks:
             print(f"  upsert {e:,}/{n_total:,}", flush=True)
 
-    print(f"  인덱싱 완료: {n_total:,}건 → {collection_name}", flush=True)
+    # 전체 upsert 완료 후 HNSW 활성화 → 백그라운드에서 1회 인덱스 구성
+    client.update_collection(
+        collection_name=collection_name,
+        hnsw_config=HnswConfigDiff(m=16, ef_construct=200),
+    )
+    print(f"  인덱싱 완료: {n_total:,}건 → {collection_name} (HNSW 구성 중...)", flush=True)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -361,6 +366,8 @@ def _run_model(
         model_kwargs = {"torch_dtype": "auto"}
     else:
         model_kwargs = {"torch_dtype": getattr(torch, dtype_str)}
+    # sdpa: PyTorch 내장 flash/mem-efficient SDPA 사용 → math 폴백 방지 (OOM·속도 개선)
+    model_kwargs["attn_implementation"] = "sdpa"
     model = SentenceTransformer(model_id, model_kwargs=model_kwargs)
     _mem("로드")
 

@@ -26,6 +26,6 @@ CMD ["bash", "-c", \
         || echo '[startup] git clone 실패 — 빌드된 코드로 실행'; \
       python -m bench.runner \
         --model-dtype auto \
-        --batch-size 64 \
+        --batch-size 256 \
         --out /workspace/reports \
         --qdrant-path /workspace/qdrant_storage"]
