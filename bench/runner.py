@@ -366,8 +366,7 @@ def _run_model(
         model_kwargs = {"torch_dtype": "auto"}
     else:
         model_kwargs = {"torch_dtype": getattr(torch, dtype_str)}
-    # sdpa: PyTorch 내장 flash/mem-efficient SDPA 사용 → math 폴백 방지 (OOM·속도 개선)
-    model_kwargs["attn_implementation"] = "sdpa"
+    model_kwargs["attn_implementation"] = "flash_attention_2"
     model = SentenceTransformer(model_id, model_kwargs=model_kwargs)
     _mem("로드")
 
