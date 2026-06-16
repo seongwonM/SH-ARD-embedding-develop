@@ -31,7 +31,7 @@ import warnings
 
 import mteb
 
-from bench.data_loader import load_combined, _TASK_CONFIGS
+from bench.data_loader import _TASK_CONFIGS
 
 _DEFAULT_MODELS = [
     "BAAI/bge-m3",
@@ -42,7 +42,7 @@ _DEFAULT_MODELS = [
 
 _KO_RETRIEVAL_TASKS = list(_TASK_CONFIGS.keys())
 
-_DTYPE_MAP = {"auto": None, "fp32": "float32", "fp16": "float16", "bf16": "bfloat16"}
+_DTYPE_MAP = {"auto": "auto", "fp32": "float32", "fp16": "float16", "bf16": "bfloat16"}
 
 _UPSERT_CHUNK = 2_000
 
@@ -187,7 +187,8 @@ def _index_corpus(
     corpus를 _UPSERT_CHUNK 단위로 인코딩해 Qdrant에 upsert.
     전체 벡터를 한꺼번에 메모리에 올리지 않아 MIRACL 150만 건도 처리 가능.
     """
-    from qdrant_client.models import Distance, VectorParams, PointStruct
+    from qdrant_client.models import Distance, VectorParams, PointStruct, HnswConfigDiff
+    import numpy as np
     import torch
 
     doc_ids = list(corpus.keys())
@@ -197,9 +198,13 @@ def _index_corpus(
     sample_text = f"{corpus[doc_ids[0]].get('title', '')} {corpus[doc_ids[0]]['text']}".strip()
     embed_dim   = model.encode([sample_text], show_progress_bar=False).shape[1]
 
+    # on_disk=True: 벡터를 RAM에 올리지 않고 디스크에서 읽어 MIRACL×대형모델 조합 RAM OOM 방지
+    # hnsw_config: ef_construct 높이면 색인 품질 향상 (기본 100 → 200)
     client.create_collection(
         collection_name=collection_name,
-        vectors_config=VectorParams(size=embed_dim, distance=Distance.COSINE),
+        vectors_config=VectorParams(size=embed_dim, distance=Distance.COSINE, on_disk=True),
+        hnsw_config=HnswConfigDiff(m=16, ef_construct=200),
+        on_disk_payload=True,
     )
     print(f"  Qdrant 컬렉션 생성: {collection_name}  dim={embed_dim}", flush=True)
 
@@ -214,12 +219,17 @@ def _index_corpus(
             for d in chunk_ids
         ]
 
-        embs = model.encode(
+        raw = model.encode(
             chunk_texts,
             batch_size=batch_size,
             show_progress_bar=False,
             normalize_embeddings=True,
         )
+        # encode()가 GPU 텐서를 반환하는 경우(비-ST 모델) CPU로 명시적 이동
+        if hasattr(raw, "cpu"):
+            raw = raw.detach().cpu()
+        embs = np.asarray(raw)
+        del raw
 
         client.upsert(
             collection_name=collection_name,
@@ -230,9 +240,11 @@ def _index_corpus(
         )
 
         del embs, chunk_texts
-        gc.collect()
+        # CUDA 비동기 연산 완전 종료 후 캐시 해제
         if torch.cuda.is_available():
+            torch.cuda.synchronize()
             torch.cuda.empty_cache()
+        gc.collect()
 
         if (ci + 1) % _log_every == 0 or ci + 1 == n_chunks:
             print(f"  upsert {e:,}/{n_total:,}", flush=True)
@@ -268,15 +280,22 @@ def _search_and_evaluate(
     del q_texts
     gc.collect()
 
+    from qdrant_client.models import SearchRequest, SearchParams
+
     print(f"  Qdrant 검색 ({len(q_ids):,} queries, top-{top_k})...", flush=True)
     run: dict = {}
-    SEARCH_CHUNK = 512
+    SEARCH_CHUNK = 256
     for start in range(0, len(q_ids), SEARCH_CHUNK):
         end = min(start + SEARCH_CHUNK, len(q_ids))
         batch_results = client.search_batch(
             collection_name=collection_name,
             requests=[
-                {"vector": q_embs[i].tolist(), "limit": top_k, "with_payload": True}
+                SearchRequest(
+                    vector=q_embs[i].tolist(),
+                    limit=top_k,
+                    with_payload=True,
+                    params=SearchParams(hnsw_ef=200),  # ef_construct과 맞춰 recall 보장
+                )
                 for i in range(start, end)
             ],
         )
@@ -337,18 +356,27 @@ def _run_model(
     print(f"  Qdrant 컬렉션: {collection_name}")
     print(f"{'='*64}")
 
-    dtype = _DTYPE_MAP.get(model_dtype)
-    model = SentenceTransformer(
-        model_id,
-        model_kwargs={"torch_dtype": getattr(torch, dtype)} if dtype else None,
-    )
+    dtype_str = _DTYPE_MAP.get(model_dtype, "auto")
+    if dtype_str == "auto":
+        model_kwargs = {"torch_dtype": "auto"}
+    else:
+        model_kwargs = {"torch_dtype": getattr(torch, dtype_str)}
+    model = SentenceTransformer(model_id, model_kwargs=model_kwargs)
     _mem("로드")
 
+    n_corpus = len(combined_corpus)
+    need_index = True
     if _collection_exists(client, collection_name):
         n_pts = client.get_collection(collection_name).points_count
-        print(f"  [스킵] 인덱스 이미 존재 ({n_pts:,}건) → 검색으로 진행", flush=True)
-    else:
-        print(f"  corpus 인덱싱 ({len(combined_corpus):,}건)...", flush=True)
+        if n_pts == n_corpus:
+            print(f"  [스킵] 인덱스 이미 존재 ({n_pts:,}건) → 검색으로 진행", flush=True)
+            need_index = False
+        else:
+            print(f"  [재색인] 불완전한 인덱스 ({n_pts:,}/{n_corpus:,}건) → 삭제 후 재색인", flush=True)
+            client.delete_collection(collection_name)
+
+    if need_index:
+        print(f"  corpus 인덱싱 ({n_corpus:,}건)...", flush=True)
         t0 = time.time()
         _index_corpus(client, collection_name, model, combined_corpus, batch_size)
         print(f"  인덱싱 완료 ({time.time()-t0:.0f}s)", flush=True)
@@ -361,9 +389,10 @@ def _run_model(
     elapsed = time.time() - t0
 
     del model
-    gc.collect()
     if torch.cuda.is_available():
+        torch.cuda.synchronize()
         torch.cuda.empty_cache()
+    gc.collect()
     _mem("모델 해제 후")
 
     print(
