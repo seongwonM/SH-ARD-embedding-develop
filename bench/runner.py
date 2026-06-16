@@ -342,9 +342,6 @@ def _run_model(
         model_id,
         model_kwargs={"torch_dtype": getattr(torch, dtype)} if dtype else None,
     )
-    if getattr(model, "max_seq_length", None) is None or model.max_seq_length > 512:
-        model.max_seq_length = 512
-        print(f"  max_seq_length → 512", flush=True)
     _mem("로드")
 
     if _collection_exists(client, collection_name):
