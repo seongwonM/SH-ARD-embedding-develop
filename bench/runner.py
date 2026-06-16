@@ -204,7 +204,7 @@ def _index_corpus(
     print(f"  Qdrant 컬렉션 생성: {collection_name}  dim={embed_dim}", flush=True)
 
     n_chunks = math.ceil(n_total / _UPSERT_CHUNK)
-    _log_every = max(1, n_chunks // 4)
+    _log_every = max(1, n_chunks // 10)
     for ci in range(n_chunks):
         s = ci * _UPSERT_CHUNK
         e = min(s + _UPSERT_CHUNK, n_total)
@@ -342,6 +342,9 @@ def _run_model(
         model_id,
         model_kwargs={"torch_dtype": getattr(torch, dtype)} if dtype else None,
     )
+    if getattr(model, "max_seq_length", None) is None or model.max_seq_length > 512:
+        model.max_seq_length = 512
+        print(f"  max_seq_length → 512", flush=True)
     _mem("로드")
 
     if _collection_exists(client, collection_name):
