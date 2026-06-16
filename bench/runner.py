@@ -24,8 +24,9 @@ import os
 import re
 import sys
 import time
+from pathlib import Path
 
-from bench.data_loader import DEFAULT_TASK_NAMES, load_combined
+from bench.data_loader import discover_datasets, load_combined
 from bench.evaluator import evaluate
 from bench.model import EmbeddingModel
 from bench.vectordb import QdrantStore, index_docs
@@ -109,11 +110,17 @@ def run_model(
     print(f"  컬렉션: {collection}")
     print(f"{'='*64}")
 
+    t_load_start = time.time()
     model = EmbeddingModel(model_id, dtype=model_dtype)
+    model_load_sec = round(time.time() - t_load_start, 2)
     _mem("모델 로드")
+    print(f"  모델 로드: {model_load_sec}s", flush=True)
 
-    # 인덱스 상태 확인
+    # 인덱스 상태 확인 및 인덱싱
     n_docs = len(combined_docs)
+    index_build_sec: float | None = None
+    index_docs_per_sec: float | None = None
+
     if store.has_collection(collection):
         n_pts = store.collection_size(collection)
         if n_pts == n_docs:
@@ -123,33 +130,44 @@ def run_model(
             store.drop_collection(collection)
             t0 = time.time()
             index_docs(store, collection, model, combined_docs, batch_size)
-            print(f"  인덱싱 {time.time()-t0:.0f}s", flush=True)
+            index_build_sec = round(time.time() - t0, 2)
+            index_docs_per_sec = round(n_docs / index_build_sec, 1)
+            print(f"  인덱싱: {index_build_sec}s  ({index_docs_per_sec} docs/s)", flush=True)
     else:
         t0 = time.time()
         index_docs(store, collection, model, combined_docs, batch_size)
-        print(f"  인덱싱 {time.time()-t0:.0f}s", flush=True)
+        index_build_sec = round(time.time() - t0, 2)
+        index_docs_per_sec = round(n_docs / index_build_sec, 1)
+        print(f"  인덱싱: {index_build_sec}s  ({index_docs_per_sec} docs/s)", flush=True)
 
-    # 검색
+    # query 인코딩
     q_ids   = list(combined_queries.keys())
     q_texts = [combined_queries[qid] for qid in q_ids]
 
     print(f"  query 인코딩 ({len(q_ids):,}건)...", flush=True)
+    t0 = time.time()
     q_embs = model.encode_queries(q_texts, batch_size)
+    query_encode_sec = round(time.time() - t0, 2)
+    query_encode_qps = round(len(q_ids) / query_encode_sec, 1)
     del q_texts
     gc.collect()
+    print(f"  query 인코딩: {query_encode_sec}s  ({query_encode_qps} queries/s)", flush=True)
 
+    # 검색
     print(f"  검색 (top-100)...", flush=True)
     t0 = time.time()
     raw_results = store.search_batch(collection, q_embs, top_k=100)
+    search_sec = round(time.time() - t0, 2)
+    search_qps = round(len(q_ids) / search_sec, 1)
     del q_embs
     gc.collect()
+    print(f"  검색: {search_sec}s  ({search_qps} queries/s)", flush=True)
 
     run = {q_ids[i]: {doc_id: score for doc_id, score in hits}
            for i, hits in enumerate(raw_results)}
 
     # 평가
     metrics = evaluate(run, combined_qrels)
-    elapsed = time.time() - t0
 
     model.close()
     _mem("모델 해제 후")
@@ -157,16 +175,23 @@ def run_model(
     print(
         f"\n  NDCG@10={metrics.get('ndcg_at_10')}  "
         f"MRR@10={metrics.get('mrr_at_10')}  "
-        f"Recall@10={metrics.get('recall_at_10')}  "
-        f"({elapsed:.0f}s)"
+        f"Recall@10={metrics.get('recall_at_10')}"
     )
 
     return {
         "model":       model_id,
-        "task":        "CombinedKoreanRetrieval",
-        "tasks":       task_names,
+        "datasets":    task_names,
         "batch_size":  batch_size,
         "model_dtype": model_dtype,
+        # ── 성능 지표 ──────────────────────────────
+        "model_load_sec":       model_load_sec,
+        "index_build_sec":      index_build_sec,      # None = 캐시 재사용
+        "index_docs_per_sec":   index_docs_per_sec,   # None = 캐시 재사용
+        "query_encode_sec":     query_encode_sec,
+        "query_encode_qps":     query_encode_qps,
+        "search_sec":           search_sec,
+        "search_qps":           search_qps,
+        # ── 검색 품질 지표 ─────────────────────────
         **metrics,
     }
 
@@ -187,9 +212,9 @@ def main() -> None:
 
     # 데이터
     ap.add_argument("--data-root", default=os.getenv("DATA_ROOT", "/workspace/datasets"),
-                    help="data_prep.py 출력 경로 ($DATA_ROOT 또는 /workspace/datasets)")
-    ap.add_argument("--tasks", nargs="*", default=DEFAULT_TASK_NAMES,
-                    help="사용할 태스크 이름 (기본: 전체)")
+                    help="데이터셋 루트 경로. 하위 디렉터리를 자동 탐색 ($DATA_ROOT 또는 /workspace/datasets)")
+    ap.add_argument("--datasets", nargs="*", default=None,
+                    help="사용할 데이터셋 경로 또는 디렉터리명 (기본: --data-root 아래 전체 자동 탐색)")
 
     # VectorDB
     ap.add_argument("--qdrant-path", default=None, help="Qdrant on-disk 경로")
@@ -205,15 +230,26 @@ def main() -> None:
 
     store = build_store(args)
 
+    # 데이터셋 경로 결정
+    if args.datasets:
+        # 절대경로면 그대로, 아니면 data_root 아래 서브디렉터리로 해석
+        data_dirs = [
+            Path(d) if Path(d).is_absolute() else Path(args.data_root) / d
+            for d in args.datasets
+        ]
+    else:
+        data_dirs = discover_datasets(args.data_root)
+        if not data_dirs:
+            sys.exit(f"데이터셋 없음: {args.data_root}\n"
+                     "data_prep.py 실행 또는 --datasets 로 경로를 직접 지정하세요.")
+
     print(f"[데이터] {args.data_root}")
-    print(f"[태스크] {args.tasks}")
+    print(f"[데이터셋] {[d.name for d in data_dirs]}")
     print(f"[모델]   {model_ids}")
 
-    print(f"\n[corpus 병합] {len(args.tasks)}개 태스크...", flush=True)
+    print(f"\n[corpus 병합] {len(data_dirs)}개 데이터셋...", flush=True)
     t0 = time.time()
-    combined_docs, combined_queries, combined_qrels, task_names = load_combined(
-        args.tasks, args.data_root
-    )
+    combined_docs, combined_queries, combined_qrels, task_names = load_combined(data_dirs)
     print(f"  병합 완료 ({time.time()-t0:.0f}s)", flush=True)
     _mem("corpus 병합 완료")
 

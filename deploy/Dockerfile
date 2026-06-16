@@ -6,7 +6,8 @@ ENV PYTHONUNBUFFERED=1 \
     TOKENIZERS_PARALLELISM=false \
     PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
     DATA_ROOT=/workspace/datasets \
-    MODEL_ID=""
+    MODEL_ID="" \
+    BATCH_SIZE=64
 
 WORKDIR /app
 
@@ -42,7 +43,10 @@ CMD ["bash", "-c", "\
   python -m bench.runner \
     ${MODEL_ARG} \
     --model-dtype auto \
-    --batch-size 256 \
+    --batch-size ${BATCH_SIZE} \
     --out ${REPORTS_PATH} \
     --qdrant-path ${QDRANT_PATH} \
     --data-root ${DATA_ROOT}"]
+# 커스텀 데이터셋 사용 예:
+#   --datasets my_csv_dataset another_jsonl_dataset
+# 각 데이터셋 디렉터리에 docs.*/queries.*/qrels.* 파일만 있으면 됨
