@@ -7,7 +7,7 @@ ENV PYTHONUNBUFFERED=1 \
     PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
     DATA_ROOT=/workspace/datasets \
     MODEL_ID="" \
-    BATCH_SIZE=64
+    BATCH_SIZE=16
 
 WORKDIR /app
 
