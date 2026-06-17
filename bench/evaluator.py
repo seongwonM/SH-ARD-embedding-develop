@@ -55,9 +55,14 @@ def evaluate(
       run   : {query_id: {doc_id: score}}
       qrels : {query_id: {doc_id: score}}
     Returns:
-      {ndcg_at_10, mrr_at_10, recall_at_1, recall_at_5, recall_at_10, map_at_10}
+      NDCG@10/20/50/100, MRR@10, Recall@1/5/10/20/50/100, MAP@10/20/50/100
     """
-    ndcg, mrr, r1, r5, r10, map10 = [], [], [], [], [], []
+    buckets: dict[str, list[float]] = {k: [] for k in [
+        "ndcg_10", "ndcg_20", "ndcg_50", "ndcg_100",
+        "mrr_10",
+        "r1", "r5", "r10", "r20", "r50", "r100",
+        "map_10", "map_20", "map_50", "map_100",
+    ]}
 
     for qid, docs_scores in run.items():
         if qid not in qrels:
@@ -68,21 +73,30 @@ def evaluate(
 
         ranked_docs = sorted(docs_scores, key=docs_scores.__getitem__, reverse=True)
 
-        ndcg.append(_ndcg(ranked_docs, relevant, 10))
-        mrr.append(_mrr(ranked_docs, relevant, 10))
-        r1.append(_recall(ranked_docs, relevant, 1))
-        r5.append(_recall(ranked_docs, relevant, 5))
-        r10.append(_recall(ranked_docs, relevant, 10))
-        map10.append(_map_at_k(ranked_docs, relevant, 10))
+        for k in (10, 20, 50, 100):
+            buckets[f"ndcg_{k}"].append(_ndcg(ranked_docs, relevant, k))
+            buckets[f"map_{k}"].append(_map_at_k(ranked_docs, relevant, k))
+        buckets["mrr_10"].append(_mrr(ranked_docs, relevant, 10))
+        for k, key in ((1, "r1"), (5, "r5"), (10, "r10"), (20, "r20"), (50, "r50"), (100, "r100")):
+            buckets[key].append(_recall(ranked_docs, relevant, k))
 
     def _avg(vals: list[float]) -> float | None:
         return round(sum(vals) / len(vals), 4) if vals else None
 
     return {
-        "ndcg_at_10":   _avg(ndcg),
-        "mrr_at_10":    _avg(mrr),
-        "recall_at_1":  _avg(r1),
-        "recall_at_5":  _avg(r5),
-        "recall_at_10": _avg(r10),
-        "map_at_10":    _avg(map10),
+        "ndcg_at_10":    _avg(buckets["ndcg_10"]),
+        "ndcg_at_20":    _avg(buckets["ndcg_20"]),
+        "ndcg_at_50":    _avg(buckets["ndcg_50"]),
+        "ndcg_at_100":   _avg(buckets["ndcg_100"]),
+        "mrr_at_10":     _avg(buckets["mrr_10"]),
+        "recall_at_1":   _avg(buckets["r1"]),
+        "recall_at_5":   _avg(buckets["r5"]),
+        "recall_at_10":  _avg(buckets["r10"]),
+        "recall_at_20":  _avg(buckets["r20"]),
+        "recall_at_50":  _avg(buckets["r50"]),
+        "recall_at_100": _avg(buckets["r100"]),
+        "map_at_10":     _avg(buckets["map_10"]),
+        "map_at_20":     _avg(buckets["map_20"]),
+        "map_at_50":     _avg(buckets["map_50"]),
+        "map_at_100":    _avg(buckets["map_100"]),
     }

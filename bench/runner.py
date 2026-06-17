@@ -175,9 +175,12 @@ def run_model(
     _mem("모델 해제 후")
 
     print(
-        f"\n  NDCG@10={metrics.get('ndcg_at_10')}  "
-        f"MRR@10={metrics.get('mrr_at_10')}  "
-        f"Recall@10={metrics.get('recall_at_10')}"
+        f"\n  NDCG@10={metrics.get('ndcg_at_10')}  @20={metrics.get('ndcg_at_20')}  "
+        f"@50={metrics.get('ndcg_at_50')}  @100={metrics.get('ndcg_at_100')}"
+    )
+    print(
+        f"  MRR@10={metrics.get('mrr_at_10')}  "
+        f"Recall@10={metrics.get('recall_at_10')}  @50={metrics.get('recall_at_50')}  @100={metrics.get('recall_at_100')}"
     )
 
     return {
