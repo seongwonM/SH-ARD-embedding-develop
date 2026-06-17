@@ -127,9 +127,10 @@ class BGEM3Model:
         return self._model.encode(
             texts,
             batch_size=batch_size,
-            return_dense=   self.vector_mode == "dense",
-            return_sparse=  self.vector_mode == "sparse",
-            return_colbert_vecs=self.vector_mode == "colbert",
+            return_dense=        self.vector_mode == "dense",
+            return_sparse=       self.vector_mode == "sparse",
+            return_colbert_vecs= self.vector_mode == "colbert",
+            show_progress_bar=False,
         )
 
     def encode_docs(self, texts: list[str], batch_size: int):
