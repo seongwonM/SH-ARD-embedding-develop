@@ -64,8 +64,6 @@ class EmbeddingModel:
 
         self._model = SentenceTransformer(model_id, model_kwargs=model_kwargs,
                                           tokenizer_kwargs=tokenizer_kwargs)
-        if model_id in _FLASH_ATTN_MODELS:
-            self._model.max_seq_length = 8192
         self._dim: int = self._model.encode(["dim probe"], show_progress_bar=False).shape[1]
 
     @property
