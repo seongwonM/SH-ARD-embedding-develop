@@ -1,19 +1,49 @@
 """
-검색 결과 평가 모듈.
+검색 결과 평가 모듈 — 외부 라이브러리 없이 직접 계산.
 
-평가 지표 교체 방법:
-  - _METRICS 세트에 pytrec_eval 지원 지표 추가/제거
-  - 완전히 다른 평가 방식(e.g. LLM-as-judge)이 필요하면
-    evaluate() 와 동일한 시그니처로 새 함수를 만들어 runner.py 에서 교체
-
-지표:
-  NDCG@10, MRR@10, Recall@1/5/10, MAP@10
-  (binary relevance: score >= 1 → relevant)
-
+지표: NDCG@10, MRR@10, Recall@1/5/10, MAP@10
+(binary relevance: score >= 1 → relevant)
 """
 from __future__ import annotations
+import math
 
-_METRICS = {"ndcg_cut.10", "recip_rank", "recall.1", "recall.5", "recall.10", "map_cut.10"}
+
+def _dcg(ranked_docs: list[str], relevant: set[str], k: int) -> float:
+    return sum(
+        1.0 / math.log2(i + 2)
+        for i, d in enumerate(ranked_docs[:k])
+        if d in relevant
+    )
+
+
+def _ndcg(ranked_docs: list[str], relevant: set[str], k: int) -> float:
+    dcg = _dcg(ranked_docs, relevant, k)
+    ideal = sum(1.0 / math.log2(i + 2) for i in range(min(len(relevant), k)))
+    return dcg / ideal if ideal > 0 else 0.0
+
+
+def _mrr(ranked_docs: list[str], relevant: set[str], k: int) -> float:
+    for i, d in enumerate(ranked_docs[:k]):
+        if d in relevant:
+            return 1.0 / (i + 1)
+    return 0.0
+
+
+def _recall(ranked_docs: list[str], relevant: set[str], k: int) -> float:
+    if not relevant:
+        return 0.0
+    return sum(1 for d in ranked_docs[:k] if d in relevant) / len(relevant)
+
+
+def _map_at_k(ranked_docs: list[str], relevant: set[str], k: int) -> float:
+    if not relevant:
+        return 0.0
+    hits, precision_sum = 0, 0.0
+    for i, d in enumerate(ranked_docs[:k]):
+        if d in relevant:
+            hits += 1
+            precision_sum += hits / (i + 1)
+    return precision_sum / len(relevant)
 
 
 def evaluate(
@@ -22,32 +52,37 @@ def evaluate(
 ) -> dict[str, float | None]:
     """
     Args:
-      run   : {query_id: {doc_id: score}} — 검색 결과
-      qrels : {query_id: {doc_id: score}} — 정답 레이블
-
+      run   : {query_id: {doc_id: score}}
+      qrels : {query_id: {doc_id: score}}
     Returns:
       {ndcg_at_10, mrr_at_10, recall_at_1, recall_at_5, recall_at_10, map_at_10}
     """
-    import pytrec_eval
+    ndcg, mrr, r1, r5, r10, map10 = [], [], [], [], [], []
 
-    binary_qrels = {
-        qid: {did: 1 for did, s in rels.items() if s >= 1}
-        for qid, rels in qrels.items()
-        if any(s >= 1 for s in rels.values())
-    }
+    for qid, docs_scores in run.items():
+        if qid not in qrels:
+            continue
+        relevant = {did for did, s in qrels[qid].items() if s >= 1}
+        if not relevant:
+            continue
 
-    evaluator = pytrec_eval.RelevanceEvaluator(binary_qrels, _METRICS)
-    per_query = evaluator.evaluate(run)
+        ranked_docs = sorted(docs_scores, key=docs_scores.__getitem__, reverse=True)
 
-    def _avg(key: str) -> float | None:
-        vals = [v.get(key, 0.0) for v in per_query.values()]
+        ndcg.append(_ndcg(ranked_docs, relevant, 10))
+        mrr.append(_mrr(ranked_docs, relevant, 10))
+        r1.append(_recall(ranked_docs, relevant, 1))
+        r5.append(_recall(ranked_docs, relevant, 5))
+        r10.append(_recall(ranked_docs, relevant, 10))
+        map10.append(_map_at_k(ranked_docs, relevant, 10))
+
+    def _avg(vals: list[float]) -> float | None:
         return round(sum(vals) / len(vals), 4) if vals else None
 
     return {
-        "ndcg_at_10":   _avg("ndcg_cut_10"),
-        "mrr_at_10":    _avg("recip_rank"),
-        "recall_at_1":  _avg("recall_1"),
-        "recall_at_5":  _avg("recall_5"),
-        "recall_at_10": _avg("recall_10"),
-        "map_at_10":    _avg("map_cut_10"),
+        "ndcg_at_10":   _avg(ndcg),
+        "mrr_at_10":    _avg(mrr),
+        "recall_at_1":  _avg(r1),
+        "recall_at_5":  _avg(r5),
+        "recall_at_10": _avg(r10),
+        "map_at_10":    _avg(map10),
     }

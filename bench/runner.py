@@ -28,7 +28,7 @@ from pathlib import Path
 
 from bench.data_loader import load_from_dir
 from bench.evaluator import evaluate
-from bench.model import EmbeddingModel
+from bench.model import build_model
 from bench.vectordb import QdrantStore, index_docs
 
 _DEFAULT_MODELS = [
@@ -102,16 +102,18 @@ def run_model(
     task_names:       list[str],
     batch_size:       int,
     model_dtype:      str,
+    vector_mode:      str = "dense",
 ) -> dict:
-    collection = _safe_name(model_id)
+    mode_suffix = f"_{vector_mode}" if vector_mode != "dense" else ""
+    collection = _safe_name(model_id) + mode_suffix
 
     print(f"\n{'='*64}")
-    print(f"  모델: {model_id}  dtype={model_dtype}")
+    print(f"  모델: {model_id}  dtype={model_dtype}  vector_mode={vector_mode}")
     print(f"  컬렉션: {collection}")
     print(f"{'='*64}")
 
     t_load_start = time.time()
-    model = EmbeddingModel(model_id, dtype=model_dtype)
+    model = build_model(model_id, vector_mode=vector_mode, dtype=model_dtype)
     model_load_sec = round(time.time() - t_load_start, 2)
     _mem("모델 로드")
     print(f"  모델 로드: {model_load_sec}s", flush=True)
@@ -156,7 +158,7 @@ def run_model(
     # 검색
     print(f"  검색 (top-100)...", flush=True)
     t0 = time.time()
-    raw_results = store.search_batch(collection, q_embs, top_k=100)
+    raw_results = store.search_batch(collection, q_embs, top_k=100, vector_mode=vector_mode)
     search_sec = round(time.time() - t0, 2)
     search_qps = round(len(q_ids) / search_sec, 1)
     del q_embs
@@ -179,10 +181,11 @@ def run_model(
     )
 
     return {
-        "model":       model_id,
-        "datasets":    task_names,
-        "batch_size":  batch_size,
-        "model_dtype": model_dtype,
+        "model":        model_id,
+        "vector_mode":  vector_mode,
+        "datasets":     task_names,
+        "batch_size":   batch_size,
+        "model_dtype":  model_dtype,
         # ── 성능 지표 ──────────────────────────────
         "model_load_sec":       model_load_sec,
         "index_build_sec":      index_build_sec,      # None = 캐시 재사용
@@ -208,6 +211,9 @@ def main() -> None:
     mg.add_argument("--model",  help="단일 모델 HuggingFace ID")
     mg.add_argument("--models", nargs="+", help="복수 모델 순차 실행")
     ap.add_argument("--model-dtype", default="auto", choices=["auto", "fp32", "fp16", "bf16"])
+    ap.add_argument("--vector-mode", default=os.getenv("VECTOR_MODE", "dense"),
+                    choices=["dense", "sparse", "colbert"],
+                    help="BGE-M3 vector 모드 (default: $VECTOR_MODE or 'dense')")
     ap.add_argument("--batch-size", type=int, default=64)
 
     # 데이터
@@ -225,12 +231,13 @@ def main() -> None:
     args = ap.parse_args()
 
     os.makedirs(args.out, exist_ok=True)
-    model_ids = [args.model] if args.model else (args.models or _DEFAULT_MODELS)
+    model_ids   = [args.model] if args.model else (args.models or _DEFAULT_MODELS)
+    vector_mode = args.vector_mode or "dense"
 
     store = build_store(args)
 
     print(f"[데이터] {args.data_root}")
-    print(f"[모델]   {model_ids}")
+    print(f"[모델]   {model_ids}  vector_mode={vector_mode}")
 
     t0 = time.time()
     combined_docs, combined_queries, combined_qrels = load_from_dir(args.data_root)
@@ -242,9 +249,10 @@ def main() -> None:
     t0_total = time.time()
 
     for model_id in model_ids:
-        ckpt = os.path.join(args.out, model_id.replace("/", "_") + ".json")
+        mode_suffix = f"_{vector_mode}" if vector_mode != "dense" else ""
+        ckpt = os.path.join(args.out, model_id.replace("/", "_") + mode_suffix + ".json")
         if os.path.exists(ckpt):
-            print(f"\n[스킵] {model_id} — 결과 존재: {ckpt}", flush=True)
+            print(f"\n[스킵] {model_id} ({vector_mode}) — 결과 존재: {ckpt}", flush=True)
             with open(ckpt, encoding="utf-8") as f:
                 all_results.append(json.load(f))
             continue
@@ -253,6 +261,7 @@ def main() -> None:
             model_id, store,
             combined_docs, combined_queries, combined_qrels, task_names,
             args.batch_size, args.model_dtype,
+            vector_mode=vector_mode,
         )
         all_results.append(result)
         with open(ckpt, "w", encoding="utf-8") as f:

@@ -7,6 +7,7 @@ ENV PYTHONUNBUFFERED=1 \
     PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
     DATA_ROOT=/workspace/datasets \
     MODEL_ID="" \
+    VECTOR_MODE="" \
     BATCH_SIZE=16
 
 WORKDIR /app
@@ -36,11 +37,14 @@ CMD ["bash", "-c", "\
     && echo '[startup] 코드 업데이트 완료' \
     || echo '[startup] git clone 실패 — 빌드된 코드로 실행'; \
   MODEL_SAFE=$(echo ${MODEL_ID} | tr '/' '_'); \
-  QDRANT_PATH=/workspace/qdrant_storage/${MODEL_SAFE:-all}; \
-  REPORTS_PATH=/workspace/reports/${MODEL_SAFE:-all}; \
+  MODE_SUFFIX=${VECTOR_MODE:+_${VECTOR_MODE}}; \
+  QDRANT_PATH=/workspace/qdrant_storage/${MODEL_SAFE:-all}${MODE_SUFFIX}; \
+  REPORTS_PATH=/workspace/reports/${MODEL_SAFE:-all}${MODE_SUFFIX}; \
   MODEL_ARG=${MODEL_ID:+--model ${MODEL_ID}}; \
+  MODE_ARG=${VECTOR_MODE:+--vector-mode ${VECTOR_MODE}}; \
   python -m bench.runner \
     ${MODEL_ARG} \
+    ${MODE_ARG} \
     --model-dtype auto \
     --batch-size ${BATCH_SIZE} \
     --out ${REPORTS_PATH} \
@@ -51,7 +55,7 @@ CMD ["bash", "-c", "\
     && git config user.email 'pod@runpod.io' \
     && git config user.name 'RunPod' \
     && mkdir -p results \
-    && cp ${REPORTS_PATH}/summary.json results/${MODEL_SAFE}.json \
+    && cp ${REPORTS_PATH}/summary.json results/${MODEL_SAFE}${MODE_SUFFIX}.json \
     && git add results/ \
     && git diff --cached --quiet || git commit -m \"result: ${MODEL_SAFE} 벤치마크 완료\" \
     && git push \
