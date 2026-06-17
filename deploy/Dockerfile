@@ -35,7 +35,6 @@ CMD ["bash", "-c", "\
     && cp -rf /tmp/latest/bench /app/ \
     && echo '[startup] 코드 업데이트 완료' \
     || echo '[startup] git clone 실패 — 빌드된 코드로 실행'; \
-  python -m bench.data_prep --out ${DATA_ROOT}; \
   MODEL_SAFE=$(echo ${MODEL_ID} | tr '/' '_'); \
   QDRANT_PATH=/workspace/qdrant_storage/${MODEL_SAFE:-all}; \
   REPORTS_PATH=/workspace/reports/${MODEL_SAFE:-all}; \
@@ -46,7 +45,7 @@ CMD ["bash", "-c", "\
     --batch-size ${BATCH_SIZE} \
     --out ${REPORTS_PATH} \
     --qdrant-path ${QDRANT_PATH} \
-    --data-root ${DATA_ROOT}"]
+    --data-root /tmp/latest/data"]
 # 커스텀 데이터셋 사용 예:
 #   --datasets my_csv_dataset another_jsonl_dataset
 # 각 데이터셋 디렉터리에 docs.*/queries.*/qrels.* 파일만 있으면 됨

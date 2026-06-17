@@ -65,11 +65,13 @@ _TASK_CONFIGS: dict[str, dict] = {
 }
 
 
-def _prep_beir(path: str, config: str, eval_split: str, out_dir: Path) -> None:
+def _prep_beir(path: str, config: str | None, eval_split: str, out_dir: Path) -> None:
     """BEIR 표준 포맷: corpus / queries / {eval_split} 세 개의 split."""
-    corpus_ds  = load_dataset(path, config, split="corpus")
-    queries_ds = load_dataset(path, config, split="queries")
-    qrels_ds   = load_dataset(path, config, split=eval_split)
+    # "default" 는 config 없음과 동일 — 명시적으로 넘기면 오류 발생
+    extra = {} if (not config or config == "default") else {"name": config}
+    corpus_ds  = load_dataset(path, split="corpus",    trust_remote_code=True, **extra)
+    queries_ds = load_dataset(path, split="queries",   trust_remote_code=True, **extra)
+    qrels_ds   = load_dataset(path, split=eval_split,  trust_remote_code=True, **extra)
 
     pd.DataFrame([
         {"id": r["_id"], "title": r.get("title") or "", "chunk": r["text"]}
@@ -87,10 +89,11 @@ def _prep_beir(path: str, config: str, eval_split: str, out_dir: Path) -> None:
     ]).to_parquet(out_dir / "qrels.parquet", index=False)
 
 
-def _prep_miracl(path: str, config: str, eval_split: str, out_dir: Path) -> None:
+def _prep_miracl(path: str, config: str | None, eval_split: str, out_dir: Path) -> None:
     """MIRACL 포맷: corpus split + eval split (positive_passages 내장)."""
-    corpus_ds = load_dataset(path, config, split="corpus")
-    eval_ds   = load_dataset(path, config, split=eval_split)
+    extra = {} if (not config or config == "default") else {"name": config}
+    corpus_ds = load_dataset(path, split="corpus",    trust_remote_code=True, **extra)
+    eval_ds   = load_dataset(path, split=eval_split,  trust_remote_code=True, **extra)
 
     pd.DataFrame([
         {"id": r["docid"], "title": r.get("title") or "", "chunk": r["text"]}

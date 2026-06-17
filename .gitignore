@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.py[cod]
+.DS_Store
+
+# 데이터 수집/전처리 스크립트 — pod에 올릴 필요 없음
+data/eda.py
+data/eda_detail.py
+data/preprocessing.py
+data/bench.parquet
+
+# parquet 데이터 파일은 추적 (corpus_all / queries_all / qrels_all)
+# !data/corpus_all.parquet  ← 기본적으로 추적됨

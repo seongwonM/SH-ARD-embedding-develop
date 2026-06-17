@@ -26,7 +26,7 @@ import sys
 import time
 from pathlib import Path
 
-from bench.data_loader import discover_datasets, load_combined
+from bench.data_loader import load_from_dir
 from bench.evaluator import evaluate
 from bench.model import EmbeddingModel
 from bench.vectordb import QdrantStore, index_docs
@@ -213,8 +213,7 @@ def main() -> None:
     # 데이터
     ap.add_argument("--data-root", default=os.getenv("DATA_ROOT", "/workspace/datasets"),
                     help="데이터셋 루트 경로. 하위 디렉터리를 자동 탐색 ($DATA_ROOT 또는 /workspace/datasets)")
-    ap.add_argument("--datasets", nargs="*", default=None,
-                    help="사용할 데이터셋 경로 또는 디렉터리명 (기본: --data-root 아래 전체 자동 탐색)")
+    # --data-root 에 파일(bench.parquet) 또는 디렉터리를 직접 지정
 
     # VectorDB
     ap.add_argument("--qdrant-path", default=None, help="Qdrant on-disk 경로")
@@ -230,27 +229,13 @@ def main() -> None:
 
     store = build_store(args)
 
-    # 데이터셋 경로 결정
-    if args.datasets:
-        # 절대경로면 그대로, 아니면 data_root 아래 서브디렉터리로 해석
-        data_dirs = [
-            Path(d) if Path(d).is_absolute() else Path(args.data_root) / d
-            for d in args.datasets
-        ]
-    else:
-        data_dirs = discover_datasets(args.data_root)
-        if not data_dirs:
-            sys.exit(f"데이터셋 없음: {args.data_root}\n"
-                     "data_prep.py 실행 또는 --datasets 로 경로를 직접 지정하세요.")
-
     print(f"[데이터] {args.data_root}")
-    print(f"[데이터셋] {[d.name for d in data_dirs]}")
     print(f"[모델]   {model_ids}")
 
-    print(f"\n[corpus 병합] {len(data_dirs)}개 데이터셋...", flush=True)
     t0 = time.time()
-    combined_docs, combined_queries, combined_qrels, task_names = load_combined(data_dirs)
-    print(f"  병합 완료 ({time.time()-t0:.0f}s)", flush=True)
+    combined_docs, combined_queries, combined_qrels = load_from_dir(args.data_root)
+    task_names = [Path(args.data_root).name]
+    print(f"  로드 완료 ({time.time()-t0:.0f}s)", flush=True)
     _mem("corpus 병합 완료")
 
     all_results = []
