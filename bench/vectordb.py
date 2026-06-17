@@ -60,7 +60,7 @@ class QdrantStore(VectorStore):
     def create_collection(self, name: str, dim: int, vector_mode: str = "dense") -> None:
         from qdrant_client.models import (
             Distance, VectorParams, HnswConfigDiff,
-            SparseVectorParams, SparseIndexParams, ModifierType,
+            SparseVectorParams, SparseIndexParams,
             MultiVectorConfig, MultiVectorComparator,
         )
 
@@ -71,7 +71,6 @@ class QdrantStore(VectorStore):
                 sparse_vectors_config={
                     "sparse": SparseVectorParams(
                         index=SparseIndexParams(on_disk=True, full_scan_threshold=5000),
-                        modifier=ModifierType.IDF,
                     )
                 },
                 on_disk_payload=True,
