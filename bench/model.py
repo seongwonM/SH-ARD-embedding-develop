@@ -124,14 +124,15 @@ class BGEM3Model:
         return self._dim
 
     def _encode(self, texts: list[str], batch_size: int):
-        return self._model.encode(
-            texts,
-            batch_size=batch_size,
-            return_dense=        self.vector_mode == "dense",
-            return_sparse=       self.vector_mode == "sparse",
-            return_colbert_vecs= self.vector_mode == "colbert",
-            show_progress_bar=False,
-        )
+        import contextlib, io
+        with contextlib.redirect_stderr(io.StringIO()):
+            return self._model.encode(
+                texts,
+                batch_size=batch_size,
+                return_dense=        self.vector_mode == "dense",
+                return_sparse=       self.vector_mode == "sparse",
+                return_colbert_vecs= self.vector_mode == "colbert",
+            )
 
     def encode_docs(self, texts: list[str], batch_size: int):
         out = self._encode(texts, batch_size)
