@@ -45,7 +45,20 @@ CMD ["bash", "-c", "\
     --batch-size ${BATCH_SIZE} \
     --out ${REPORTS_PATH} \
     --qdrant-path ${QDRANT_PATH} \
-    --data-root /tmp/latest/data"]
+    --data-root /tmp/latest/data \
+  && if [ -n \"${GH_TOKEN}\" ]; then \
+       cd /tmp/latest \
+    && git config user.email 'pod@runpod.io' \
+    && git config user.name 'RunPod' \
+    && mkdir -p results \
+    && cp ${REPORTS_PATH}/summary.json results/${MODEL_SAFE}.json \
+    && git add results/ \
+    && git diff --cached --quiet || git commit -m \"result: ${MODEL_SAFE} 벤치마크 완료\" \
+    && git push \
+    && echo '[git] 결과 push 완료'; \
+  fi; \
+  echo '[완료] 대기 중 (재시작 방지)'; \
+  sleep infinity"]
 # 커스텀 데이터셋 사용 예:
 #   --datasets my_csv_dataset another_jsonl_dataset
 # 각 데이터셋 디렉터리에 docs.*/queries.*/qrels.* 파일만 있으면 됨
