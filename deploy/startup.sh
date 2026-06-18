@@ -38,6 +38,19 @@ MODEL_ARG=""
 MODE_ARG=""
 [ -n "${VECTOR_MODE:-}" ] && MODE_ARG="--vector-mode ${VECTOR_MODE}"
 
+# 데이터 경로 결정: git clone 성공 시 /tmp/latest/data, 실패 시 /workspace/datasets fallback
+DATA_DIR="/tmp/latest/data"
+if [ ! -f "${DATA_DIR}/corpus_all.parquet" ]; then
+    if [ -f "/workspace/datasets/corpus_all.parquet" ]; then
+        DATA_DIR="/workspace/datasets"
+        echo "[startup] git clone 내 data 없음 → fallback: ${DATA_DIR}"
+    else
+        echo "[startup] ERROR: 데이터 없음 (${DATA_DIR}, /workspace/datasets 모두 확인 실패)"
+        exit 1
+    fi
+fi
+echo "[startup] 데이터 경로: ${DATA_DIR}"
+
 python -m bench.runner \
     ${MODEL_ARG} \
     ${MODE_ARG} \
@@ -45,7 +58,7 @@ python -m bench.runner \
     --batch-size "${BATCH_SIZE:-16}" \
     --out "${REPORTS_PATH}" \
     --qdrant-url http://localhost:6333 \
-    --data-root /tmp/latest/data
+    --data-root "${DATA_DIR}"
 
 if [ -n "${GH_TOKEN:-}" ]; then
     echo "[git] GH_TOKEN 감지됨, 결과 push 시작..."
