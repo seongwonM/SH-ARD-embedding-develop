@@ -109,6 +109,11 @@ class QdrantStore(VectorStore):
         if vector_mode == "sparse":
             print(f"  sparse 인덱스 완료 (inverted index)", flush=True)
             return
+        if vector_mode == "colbert":
+            # colbert는 680만+ HNSW 노드 재구성 → 수 시간 + OOM
+            # m=0(flat search)으로 정확한 MaxSim 계산 — 벤치마크에 더 적합
+            print(f"  colbert 인덱스 완료 (flat/brute-force MaxSim)", flush=True)
+            return
         from qdrant_client.models import HnswConfigDiff
         self._client.update_collection(
             collection_name=name,
