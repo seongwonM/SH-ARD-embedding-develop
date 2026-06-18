@@ -37,9 +37,22 @@ def load_from_dir(data_dir: str | Path) -> tuple[dict, dict, dict]:
     for r in qrels_df.to_dict("records"):
         qrels.setdefault(str(r["query-id"]), {})[str(r["corpus-id"])] = int(r["score"])
 
+    total_pairs = sum(len(v) for v in qrels.values())
+    relevant_pairs = sum(s >= 1 for v in qrels.values() for s in v.values())
+    queries_with_rel = sum(1 for v in qrels.values() if any(s >= 1 for s in v.values()))
+    rel_sizes = [sum(1 for s in v.values() if s >= 1) for v in qrels.values() if any(s >= 1 for s in v.values())]
+    avg_rel = sum(rel_sizes) / len(rel_sizes) if rel_sizes else 0
+    sample_qid = next(iter(qrels))
+    sample_docs = list(qrels[sample_qid].items())[:3]
     print(
         f"[데이터] corpus={len(docs):,}  queries={len(queries):,}  "
-        f"qrel_pairs={sum(len(v) for v in qrels.values()):,}",
+        f"qrel_pairs={total_pairs:,}  relevant(score≥1)={relevant_pairs:,}",
         flush=True,
     )
+    print(
+        f"[데이터] queries_with_relevant={queries_with_rel:,}  avg_relevant_per_query={avg_rel:.2f}",
+        flush=True,
+    )
+    print(f"[데이터] qrel sample qid={sample_qid!r} → {sample_docs}", flush=True)
+    print(f"[데이터] corpus sample _id={next(iter(docs))!r}  query sample _id={next(iter(queries))!r}", flush=True)
     return docs, queries, qrels
