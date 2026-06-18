@@ -5,8 +5,7 @@ on:
     branches: [main]
     paths:
       - "bench/**"
-      - "deploy/Dockerfile"
-      - "deploy/requirements.txt"
+      - "deploy/**"
       - ".github/workflows/**"
 
 env:
