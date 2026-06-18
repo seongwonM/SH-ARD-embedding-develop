@@ -19,8 +19,15 @@ fi
 
 MODEL_SAFE=$(echo "${MODEL_ID:-}" | tr '/' '_')
 MODE_SUFFIX=${VECTOR_MODE:+_${VECTOR_MODE}}
-QDRANT_PATH="/workspace/qdrant_storage/${MODEL_SAFE:-all}${MODE_SUFFIX:-}"
 REPORTS_PATH="/workspace/reports/${MODEL_SAFE:-all}${MODE_SUFFIX:-}"
+
+# Qdrant 서버 시작
+mkdir -p /workspace/qdrant_storage
+qdrant --storage-path /workspace/qdrant_storage --disable-telemetry &
+QDRANT_PID=$!
+echo "[qdrant] 서버 시작 (PID=$QDRANT_PID), 준비 대기 중..."
+until curl -sf http://localhost:6333/healthz >/dev/null 2>&1; do sleep 1; done
+echo "[qdrant] 서버 준비 완료"
 
 MODEL_ARG=""
 [ -n "${MODEL_ID:-}" ] && MODEL_ARG="--model ${MODEL_ID}"
@@ -34,7 +41,7 @@ python -m bench.runner \
     --model-dtype auto \
     --batch-size "${BATCH_SIZE:-16}" \
     --out "${REPORTS_PATH}" \
-    --qdrant-path "${QDRANT_PATH}" \
+    --qdrant-url http://localhost:6333 \
     --data-root /tmp/latest/data
 
 if [ -n "${GH_TOKEN:-}" ]; then

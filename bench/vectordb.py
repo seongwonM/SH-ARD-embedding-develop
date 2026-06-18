@@ -1,18 +1,14 @@
 """
 VectorDB 추상화 레이어.
 
-vector_mode별 구성:
-  dense  : Qdrant VectorParams (cosine, on_disk=False) — flat/exact search (m=0)
-  sparse : SparseDiskIndex — scipy CSR matrix + 배치 sparse matmul 검색
-           (QdrantLocal은 sparse inverted index를 Python으로 빌드 → 수십분 block)
-  colbert: ColbertDiskIndex — numpy fp16 바이너리 + GPU MaxSim 검색
-           (QdrantLocal은 colbert 멀티벡터를 Python list로 저장 → 42GB RAM OOM)
+URL 모드 (Qdrant Rust 서버):
+  dense  : VectorParams cosine, flat exact (m=0)
+  sparse : SparseVectorParams — Rust 네이티브 inverted index
+  colbert: MultiVectorConfig(MAX_SIM) — Rust 네이티브 multivector
 
-인덱싱 패턴:
-  - encode는 _ENCODE_CHUNK 단위로 chunking (OOM 방지)
-  - dense: upload_points(generator) streaming (Qdrant 공식)
-  - sparse: SparseDiskIndex → scipy CSR 저장
-  - colbert: ColbertDiskIndex → fp16 바이너리 저장
+Path 모드 (QdrantLocal, 소규모 테스트용):
+  sparse : SparseDiskIndex (scipy CSR)
+  colbert: ColbertDiskIndex (fp16 바이너리)
 """
 from __future__ import annotations
 
@@ -397,20 +393,26 @@ class ColbertDiskIndex:
 # ── Qdrant 구현 ───────────────────────────────────────────────────────────────
 
 class QdrantStore(VectorStore):
-    """Qdrant (dense) + SparseDiskIndex (sparse) + ColbertDiskIndex (colbert)."""
+    """
+    URL 모드 (Qdrant Rust 서버): dense/sparse/colbert 모두 서버 네이티브 API 사용.
+    Path 모드 (QdrantLocal, <20K 테스트용): sparse→SparseDiskIndex, colbert→ColbertDiskIndex.
+    """
 
     def __init__(self, *, path: str | None = None, url: str | None = None) -> None:
         from qdrant_client import QdrantClient
+        self._url = url
         if url:
-            self._client  = QdrantClient(url=url)
+            self._client  = QdrantClient(url=url, timeout=300)
             self._sparse  = None
             self._colbert = None
-            print(f"[Qdrant] 원격 서버: {url}", flush=True)
+            print(f"[Qdrant] 서버 모드: {url}", flush=True)
         else:
             self._client  = QdrantClient(path=path)
             self._sparse  = SparseDiskIndex(path)
             self._colbert = ColbertDiskIndex(path)
-            print(f"[Qdrant] on-disk: {path}", flush=True)
+            print(f"[Qdrant] local 모드: {path}", flush=True)
+
+    # ── 컬렉션 존재 / 크기 ────────────────────────────────────────────────────
 
     def has_collection(self, name: str) -> bool:
         if self._sparse  is not None and self._sparse.has(name):   return True
@@ -422,38 +424,90 @@ class QdrantStore(VectorStore):
         if self._colbert is not None and self._colbert.has(name):  return self._colbert.size(name)
         return self._client.get_collection(name).points_count
 
-    def create_collection(self, name: str, dim: int, vector_mode: str = "dense") -> None:
-        if vector_mode == "sparse":
-            if self._sparse is None:
-                raise ValueError("Sparse disk index는 path 기반 QdrantStore 필요")
-            self._sparse.create(name)
-            return
-        if vector_mode == "colbert":
-            if self._colbert is None:
-                raise ValueError("ColBERT disk index는 path 기반 QdrantStore 필요")
-            self._colbert.create(name)
-            return
+    # ── 컬렉션 생성 ───────────────────────────────────────────────────────────
 
-        from qdrant_client.models import Distance, VectorParams, HnswConfigDiff
-        self._client.create_collection(
-            collection_name=name,
-            vectors_config=VectorParams(
-                size=dim, distance=Distance.COSINE, on_disk=False,
-            ),
-            hnsw_config=HnswConfigDiff(m=0),
-            on_disk_payload=False,
+    def create_collection(self, name: str, dim: int, vector_mode: str = "dense") -> None:
+        # path 모드: sparse/colbert → 디스크 인덱스
+        if vector_mode == "sparse" and self._sparse is not None:
+            self._sparse.create(name); return
+        if vector_mode == "colbert" and self._colbert is not None:
+            self._colbert.create(name); return
+
+        from qdrant_client.models import (
+            Distance, VectorParams, HnswConfigDiff,
+            SparseVectorParams, SparseIndexParams,
+            MultiVectorConfig, MultiVectorComparator,
         )
+
+        if vector_mode == "sparse":
+            # 서버 네이티브 sparse (inverted index는 Rust가 처리)
+            self._client.create_collection(
+                collection_name=name,
+                vectors_config={},
+                sparse_vectors_config={
+                    "sparse": SparseVectorParams(
+                        index=SparseIndexParams(on_disk=False, full_scan_threshold=20_000),
+                    )
+                },
+                on_disk_payload=False,
+            )
+        elif vector_mode == "colbert":
+            # 서버 네이티브 multivector MaxSim
+            self._client.create_collection(
+                collection_name=name,
+                vectors_config={
+                    "colbert": VectorParams(
+                        size=dim,
+                        distance=Distance.COSINE,
+                        multivector_config=MultiVectorConfig(
+                            comparator=MultiVectorComparator.MAX_SIM,
+                        ),
+                        on_disk=False,
+                    )
+                },
+                hnsw_config=HnswConfigDiff(m=0),
+                on_disk_payload=False,
+            )
+        else:  # dense
+            self._client.create_collection(
+                collection_name=name,
+                vectors_config=VectorParams(
+                    size=dim, distance=Distance.COSINE, on_disk=False,
+                ),
+                hnsw_config=HnswConfigDiff(m=0),
+                on_disk_payload=False,
+            )
         print(f"  Qdrant 컬렉션 생성: {name}  mode={vector_mode}  dim={dim}", flush=True)
 
+    # ── 업로드 ────────────────────────────────────────────────────────────────
+
     def upload_stream(self, name: str, points, vector_mode: str = "dense") -> None:
+        if vector_mode == "sparse" and self._sparse is not None:
+            self._sparse.write_stream(name, points); return
+        if vector_mode == "colbert" and self._colbert is not None:
+            self._colbert.write_stream(name, points); return
+
+        # 서버 모드: _SparsePoint/_ColbertPoint → PointStruct 변환
         if vector_mode == "sparse":
-            assert self._sparse is not None
-            self._sparse.write_stream(name, points)
-            return
-        if vector_mode == "colbert":
-            assert self._colbert is not None
-            self._colbert.write_stream(name, points)
-            return
+            from qdrant_client.models import PointStruct, SparseVector as QSparse
+            def _wrap(pts):
+                for pid, pt in enumerate(pts):
+                    yield PointStruct(
+                        id=pid,
+                        vector={"sparse": QSparse(indices=pt.indices, values=pt.values)},
+                        payload={"doc_id": pt.doc_id},
+                    )
+            points = _wrap(points)
+        elif vector_mode == "colbert":
+            from qdrant_client.models import PointStruct
+            def _wrap(pts):
+                for pid, pt in enumerate(pts):
+                    yield PointStruct(
+                        id=pid,
+                        vector={"colbert": pt.vec.astype(np.float32).tolist()},
+                        payload={"doc_id": pt.doc_id},
+                    )
+            points = _wrap(points)
 
         print("  [upload] upload_points 시작...", flush=True)
         self._client.upload_points(
@@ -465,9 +519,13 @@ class QdrantStore(VectorStore):
         )
         print("  [upload] upload_points 완료", flush=True)
 
+    # ── 인덱스 마무리 ─────────────────────────────────────────────────────────
+
     def finalize_index(self, name: str, vector_mode: str = "dense") -> None:
-        labels = {"dense": "flat cosine", "sparse": "sparse matmul", "colbert": "flat MaxSim"}
+        labels = {"dense": "flat cosine", "sparse": "sparse (native)", "colbert": "MaxSim (native)"}
         print(f"  인덱스 완료 ({labels.get(vector_mode, vector_mode)})", flush=True)
+
+    # ── 검색 ─────────────────────────────────────────────────────────────────
 
     def search_batch(
         self,
@@ -476,36 +534,68 @@ class QdrantStore(VectorStore):
         top_k:       int,
         vector_mode: str = "dense",
     ) -> list[list[tuple[str, float]]]:
-        if vector_mode == "sparse":
-            assert self._sparse is not None
+        if vector_mode == "sparse" and self._sparse is not None:
             return self._sparse.search(name, vectors, top_k)
-        if vector_mode == "colbert":
-            assert self._colbert is not None
+        if vector_mode == "colbert" and self._colbert is not None:
             return self._colbert.search(name, vectors, top_k)
 
-        # dense
-        from qdrant_client.models import QueryRequest
+        from qdrant_client.models import QueryRequest, SparseVector, NamedSparseVector
+
         CHUNK = 256
         n = len(vectors)
         all_results: list[list[tuple[str, float]]] = []
 
         for start in range(0, n, CHUNK):
-            end   = min(start + CHUNK, n)
-            batch = self._client.query_batch_points(
-                collection_name=name,
-                requests=[
+            end = min(start + CHUNK, n)
+
+            if vector_mode == "sparse":
+                # vectors: list[dict[str|int, float]]  (lexical_weights)
+                requests = [
+                    QueryRequest(
+                        query=NamedSparseVector(
+                            name="sparse",
+                            vector=SparseVector(
+                                indices=[int(k) for k in vectors[i].keys()],
+                                values=list(vectors[i].values()),
+                            ),
+                        ),
+                        limit=top_k,
+                        with_payload=True,
+                        using="sparse",
+                    )
+                    for i in range(start, end)
+                ]
+            elif vector_mode == "colbert":
+                # vectors: list[np.ndarray [n_tokens, dim]]
+                requests = [
+                    QueryRequest(
+                        query=vectors[i].tolist(),
+                        limit=top_k,
+                        with_payload=True,
+                        using="colbert",
+                    )
+                    for i in range(start, end)
+                ]
+            else:  # dense
+                requests = [
                     QueryRequest(
                         query=vectors[i].tolist(),
                         limit=top_k,
                         with_payload=True,
                     )
                     for i in range(start, end)
-                ],
+                ]
+
+            batch = self._client.query_batch_points(
+                collection_name=name,
+                requests=requests,
             )
             for result in batch:
                 all_results.append([(r.payload["doc_id"], r.score) for r in result.points])
 
         return all_results
+
+    # ── 삭제 ─────────────────────────────────────────────────────────────────
 
     def drop_collection(self, name: str) -> None:
         if self._sparse  is not None and self._sparse.has(name):
