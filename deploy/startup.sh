@@ -24,7 +24,7 @@ REPORTS_PATH="/workspace/reports/${MODEL_SAFE:-all}${MODE_SUFFIX}"
 
 # Qdrant 서버 시작
 mkdir -p /workspace/qdrant_storage
-qdrant --storage-path /workspace/qdrant_storage --disable-telemetry &
+QDRANT__STORAGE__STORAGE_PATH=/workspace/qdrant_storage qdrant --disable-telemetry &
 QDRANT_PID=$!
 echo "[qdrant] 서버 시작 (PID=$QDRANT_PID), 준비 대기 중..."
 until curl -sf http://localhost:6333/healthz >/dev/null 2>&1; do sleep 1; done
