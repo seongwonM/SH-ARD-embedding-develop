@@ -38,15 +38,27 @@ python -m bench.runner \
     --data-root /tmp/latest/data
 
 if [ -n "${GH_TOKEN:-}" ]; then
-    cd /tmp/latest
-    git config user.email 'pod@runpod.io'
-    git config user.name 'RunPod'
-    mkdir -p results
-    cp "${REPORTS_PATH}/summary.json" "results/${MODEL_SAFE:-all}${MODE_SUFFIX:-}.json"
-    git add results/
-    git diff --cached --quiet || git commit -m "result: ${MODEL_SAFE:-all} 벤치마크 완료"
-    git push
-    echo "[git] 결과 push 완료"
+    echo "[git] GH_TOKEN 감지됨, 결과 push 시작..."
+    RESULT_FILE="${REPORTS_PATH}/summary.json"
+    if [ ! -f "$RESULT_FILE" ]; then
+        echo "[git] 결과 파일 없음: $RESULT_FILE — push 스킵"
+    else
+        cd /tmp/latest
+        git config user.email 'pod@runpod.io'
+        git config user.name 'RunPod'
+        mkdir -p results
+        cp "$RESULT_FILE" "results/${MODEL_SAFE:-all}${MODE_SUFFIX:-}.json"
+        echo "[git] 결과 파일 복사 완료"
+        git add results/
+        if git diff --cached --quiet; then
+            echo "[git] 변경 없음 (이미 push됨)"
+        else
+            git commit -m "result: ${MODEL_SAFE:-all} 벤치마크 완료"
+            # 다른 pod가 먼저 push한 경우 충돌 방지
+            git pull --rebase origin main || echo "[git] rebase 실패 — 그냥 push 시도"
+            git push && echo "[git] push 완료" || echo "[git] push 실패 — 수동 확인 필요"
+        fi
+    fi
 fi
 
 echo "[완료] 대기 중 (재시작 방지)"
