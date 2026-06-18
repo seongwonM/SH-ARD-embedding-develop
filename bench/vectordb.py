@@ -149,19 +149,36 @@ class QdrantStore(VectorStore):
                 for result in batch:
                     all_results.append([(r.payload["doc_id"], r.score) for r in result.points])
 
-        else:  # dense or colbert
-            from qdrant_client.models import QueryRequest, SearchParams
-            search_params = {} if vector_mode == "colbert" else {"params": SearchParams(hnsw_ef=256)}
+        elif vector_mode == "colbert":
+            from qdrant_client.models import QueryRequest
             for start in range(0, n, CHUNK):
                 end = min(start + CHUNK, n)
                 batch = self._client.query_batch_points(
                     collection_name=name,
                     requests=[
                         QueryRequest(
-                            query=vectors[i].tolist(),
+                            query=vectors[i].tolist(),  # 2D: [[tok_dim...], ...]
                             limit=top_k,
                             with_payload=True,
-                            **search_params,
+                        )
+                        for i in range(start, end)
+                    ],
+                )
+                for result in batch:
+                    all_results.append([(r.payload["doc_id"], r.score) for r in result.points])
+
+        else:  # dense
+            from qdrant_client.models import QueryRequest, SearchParams
+            for start in range(0, n, CHUNK):
+                end = min(start + CHUNK, n)
+                batch = self._client.query_batch_points(
+                    collection_name=name,
+                    requests=[
+                        QueryRequest(
+                            query=vectors[i].tolist(),  # 1D: [dim1, dim2, ...]
+                            params=SearchParams(hnsw_ef=256),
+                            limit=top_k,
+                            with_payload=True,
                         )
                         for i in range(start, end)
                     ],
