@@ -131,7 +131,7 @@ class BGEM3Model:
         return self._dim
 
     def _encode(self, texts: list[str], batch_size: int):
-        import contextlib, io, psutil, os
+        import contextlib, io, psutil, os, torch
         proc = psutil.Process(os.getpid())
         mem_before = proc.memory_info().rss / 1e9
         gpu_before = torch.cuda.memory_allocated() / 1e9 if torch.cuda.is_available() else 0.0
