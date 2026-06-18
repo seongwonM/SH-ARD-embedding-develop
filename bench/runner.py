@@ -164,6 +164,12 @@ def run_model(
     run = {q_ids[i]: {doc_id: score for doc_id, score in hits}
            for i, hits in enumerate(raw_results)}
 
+    # ID 불일치 진단 (첫 쿼리 기준)
+    _diag_qid = q_ids[0]
+    _diag_hits = list(raw_results[0])[:3]
+    _diag_relevant = list(combined_qrels.get(_diag_qid, {}).keys())[:3]
+    print(f"  [진단] query_id={_diag_qid!r}  검색결과doc_ids={[d for d,_ in _diag_hits]}  qrels_doc_ids={_diag_relevant}", flush=True)
+
     # 평가
     metrics = evaluate(run, combined_qrels)
 
