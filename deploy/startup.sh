@@ -49,5 +49,5 @@ if [ -n "${GH_TOKEN:-}" ]; then
     echo "[git] 결과 push 완료"
 fi
 
-echo "[완료] 종료"
-# sleep infinity 제거 — 완료 후 컨테이너 자동 종료
+echo "[완료] 대기 중 (재시작 방지)"
+sleep infinity
