@@ -122,7 +122,7 @@ class QdrantStore(VectorStore):
         top_k:       int,
         vector_mode: str = "dense",
     ) -> list[list[tuple[str, float]]]:
-        from qdrant_client.models import QueryRequest, SparseVector, NamedSparseVector
+        from qdrant_client.models import QueryRequest, SparseVector
 
         CHUNK = 256
         n = len(vectors)
@@ -135,12 +135,9 @@ class QdrantStore(VectorStore):
                 # vectors: list[dict[str|int, float]]  (lexical_weights)
                 requests = [
                     QueryRequest(
-                        query=NamedSparseVector(
-                            name="sparse",
-                            vector=SparseVector(
-                                indices=[int(k) for k in vectors[i].keys()],
-                                values=list(vectors[i].values()),
-                            ),
+                        query=SparseVector(
+                            indices=[int(k) for k in vectors[i].keys()],
+                            values=list(vectors[i].values()),
                         ),
                         limit=top_k,
                         with_payload=True,
