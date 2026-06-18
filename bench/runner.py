@@ -82,11 +82,7 @@ def build_store(args) -> QdrantStore:
     VectorDB 인스턴스 생성.
     다른 VectorDB로 교체하려면 이 함수에서 해당 클래스를 반환하도록 수정.
     """
-    if args.qdrant_url:
-        return QdrantStore(url=args.qdrant_url)
-    qdrant_path = args.qdrant_path or os.path.join(args.out, "qdrant_storage")
-    os.makedirs(qdrant_path, exist_ok=True)
-    return QdrantStore(path=qdrant_path)
+    return QdrantStore(url=args.qdrant_url)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -225,8 +221,8 @@ def main() -> None:
     # --data-root 에 파일(bench.parquet) 또는 디렉터리를 직접 지정
 
     # VectorDB
-    ap.add_argument("--qdrant-path", default=None, help="Qdrant on-disk 경로")
-    ap.add_argument("--qdrant-url",  default=None, help="원격 Qdrant URL (e.g. http://localhost:6333)")
+    ap.add_argument("--qdrant-url", default="http://localhost:6333",
+                    help="Qdrant 서버 URL (default: http://localhost:6333)")
 
     # 출력
     ap.add_argument("--out", default="reports", help="결과 저장 디렉터리")
