@@ -164,11 +164,37 @@ def run_model(
     run = {q_ids[i]: {doc_id: score for doc_id, score in hits}
            for i, hits in enumerate(raw_results)}
 
-    # ID 불일치 진단 (첫 쿼리 기준)
-    _diag_qid = q_ids[0]
-    _diag_hits = list(raw_results[0])[:3]
-    _diag_relevant = list(combined_qrels.get(_diag_qid, {}).keys())[:3]
-    print(f"  [진단] query_id={_diag_qid!r}  검색결과doc_ids={[d for d,_ in _diag_hits]}  qrels_doc_ids={_diag_relevant}", flush=True)
+    # ── 검색 결과 진단 (첫 쿼리 기준) ─────────────────────────────────────────
+    _diag_qid      = q_ids[0]
+    _diag_hits     = raw_results[0]                    # [(doc_id, score), ...]
+    _diag_qrel     = combined_qrels.get(_diag_qid, {}) # {doc_id: score}
+    _diag_relevant = {d for d, s in _diag_qrel.items() if s >= 1}
+
+    _hit_ids    = [d for d, _ in _diag_hits]
+    _hit_scores = [s for _, s in _diag_hits]
+    _found_in_100 = sum(1 for d in _hit_ids if d in _diag_relevant)
+
+    print(
+        f"  [진단] query_id={_diag_qid!r}  qrels_relevant={len(_diag_relevant)}건"
+        f"  top100에서_found={_found_in_100}건",
+        flush=True,
+    )
+    print(
+        f"  [진단] score 분포: max={max(_hit_scores):.4f}  min={min(_hit_scores):.4f}"
+        f"  top3={[round(s,4) for s in _hit_scores[:3]]}",
+        flush=True,
+    )
+    print(
+        f"  [진단] top3 doc_ids={_hit_ids[:3]}",
+        flush=True,
+    )
+    print(
+        f"  [진단] qrels top3={list(_diag_relevant)[:3]}",
+        flush=True,
+    )
+    # rank-1 결과가 relevant인지 명시
+    _rank1_correct = _hit_ids[0] in _diag_relevant if _hit_ids else False
+    print(f"  [진단] rank-1 correct={_rank1_correct}", flush=True)
 
     # 평가
     metrics = evaluate(run, combined_qrels)
