@@ -32,10 +32,15 @@ COPY bench ./bench
 CMD ["bash", "-c", "\
   REPO=https://github.com/seongwonM/SH-ARD-embedding-develop.git; \
   TARGET=${GH_TOKEN:+https://${GH_TOKEN}@github.com/seongwonM/SH-ARD-embedding-develop.git}; \
-  rm -rf /tmp/latest && git clone --depth=1 ${TARGET:-$REPO} /tmp/latest 2>&1 \
-    && cp -rf /tmp/latest/bench /app/ \
-    && echo '[startup] 코드 업데이트 완료' \
-    || echo '[startup] git clone 실패 — 빌드된 코드로 실행'; \
+  for i in 1 2 3 4 5; do \
+    rm -rf /tmp/latest && git clone --depth=1 ${TARGET:-$REPO} /tmp/latest 2>&1 && break; \
+    echo "[startup] git clone 실패 (시도 $i/5) — 10초 후 재시도..."; sleep 10; \
+  done; \
+  if [ -d /tmp/latest ]; then \
+    cp -rf /tmp/latest/bench /app/ && echo '[startup] 코드 업데이트 완료'; \
+  else \
+    echo '[startup] git clone 최종 실패 — 빌드된 코드로 실행'; \
+  fi; \
   MODEL_SAFE=$(echo ${MODEL_ID} | tr '/' '_'); \
   MODE_SUFFIX=${VECTOR_MODE:+_${VECTOR_MODE}}; \
   QDRANT_PATH=/workspace/qdrant_storage/${MODEL_SAFE:-all}${MODE_SUFFIX}; \
