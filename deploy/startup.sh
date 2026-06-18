@@ -24,7 +24,9 @@ REPORTS_PATH="/workspace/reports/${MODEL_SAFE:-all}${MODE_SUFFIX:-}"
 # Qdrant 서버 시작 (pod별 독립 스토리지 — RocksDB lock 충돌 방지)
 QDRANT_STORAGE="/workspace/qdrant_storage/${MODEL_SAFE:-default}${MODE_SUFFIX:-}"
 mkdir -p "$QDRANT_STORAGE"
-QDRANT__STORAGE__STORAGE_PATH="$QDRANT_STORAGE" qdrant --disable-telemetry &
+QDRANT__STORAGE__STORAGE_PATH="$QDRANT_STORAGE" \
+QDRANT__LOG_LEVEL=WARN \
+qdrant --disable-telemetry &
 QDRANT_PID=$!
 echo "[qdrant] 서버 시작 (PID=$QDRANT_PID), 준비 대기 중..."
 until curl -sf http://localhost:6333/healthz >/dev/null 2>&1; do sleep 1; done
