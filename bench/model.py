@@ -131,9 +131,13 @@ class BGEM3Model:
         return self._dim
 
     def _encode(self, texts: list[str], batch_size: int):
-        import contextlib, io
+        import contextlib, io, psutil, os
+        proc = psutil.Process(os.getpid())
+        mem_before = proc.memory_info().rss / 1e9
+        gpu_before = torch.cuda.memory_allocated() / 1e9 if torch.cuda.is_available() else 0.0
+
         with contextlib.redirect_stderr(io.StringIO()):
-            return self._model.encode(
+            out = self._model.encode(
                 texts,
                 batch_size=batch_size,
                 return_dense=        self.vector_mode == "dense",
@@ -141,14 +145,22 @@ class BGEM3Model:
                 return_colbert_vecs= self.vector_mode == "colbert",
             )
 
+        mem_after = proc.memory_info().rss / 1e9
+        gpu_after = torch.cuda.memory_allocated() / 1e9 if torch.cuda.is_available() else 0.0
+        print(f"  [encode] RAM {mem_before:.1f}→{mem_after:.1f}GB  GPU {gpu_before:.1f}→{gpu_after:.1f}GB  n={len(texts)}", flush=True)
+        return out
+
     def encode_docs(self, texts: list[str], batch_size: int):
         out = self._encode(texts, batch_size)
         if self.vector_mode == "dense":
             return _to_numpy(out["dense_vecs"])
         elif self.vector_mode == "sparse":
-            return out["lexical_weights"]   # list[dict[int, float]]
+            return out["lexical_weights"]   # list[dict[str, float]]
         else:
-            return out["colbert_vecs"]      # list[np.ndarray]
+            vecs = out["colbert_vecs"]      # list[np.ndarray [n_tokens, 1024]]
+            total_mb = sum(v.nbytes for v in vecs) / 1e6
+            print(f"  [colbert] {len(vecs)}docs  avg_tokens={sum(v.shape[0] for v in vecs)/len(vecs):.0f}  total={total_mb:.0f}MB", flush=True)
+            return vecs
 
     def encode_queries(self, texts: list[str], batch_size: int):
         return self.encode_docs(texts, batch_size)
