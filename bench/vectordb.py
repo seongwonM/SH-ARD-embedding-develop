@@ -2,14 +2,14 @@
 VectorDB 추상화 레이어.
 
 vector_mode별 Qdrant 컬렉션 구성:
-  dense  : VectorParams (cosine) — HNSW
-  sparse : SparseVectorParams    — inverted index
-  colbert: VectorParams + MultiVectorConfig(MAX_SIM) — HNSW multi-vector
+  dense  : VectorParams (cosine, on_disk=False) — flat/exact search (m=0)
+  sparse : SparseVectorParams — inverted index
+  colbert: VectorParams + MultiVectorConfig(MAX_SIM) — flat MaxSim (m=0)
 
 인덱싱 패턴 (Qdrant 공식 권장):
   - encode는 _ENCODE_CHUNK 단위로 chunking (OOM 방지)
   - upsert는 upload_points(generator) 로 streaming (자동 배치/재시도)
-  - bulk insert 중 HNSW m=0, 완료 후 m=32/ef=256 (Qdrant 공식 권장)
+  - 모든 모드 m=0 (flat/exact) — HNSW 재구성 없음, 벤치마크에 정확한 결과
 """
 from __future__ import annotations
 
@@ -85,10 +85,10 @@ class QdrantStore(VectorStore):
                 hnsw_config=HnswConfigDiff(m=0),
                 on_disk_payload=False,
             )
-        else:  # dense
+        else:  # dense — on_disk=False(RAM), m=0(flat exact), HNSW 재구성 없음
             self._client.create_collection(
                 collection_name=name,
-                vectors_config=VectorParams(size=dim, distance=Distance.COSINE, on_disk=True),
+                vectors_config=VectorParams(size=dim, distance=Distance.COSINE, on_disk=False),
                 hnsw_config=HnswConfigDiff(m=0),
                 on_disk_payload=False,
             )
@@ -106,20 +106,10 @@ class QdrantStore(VectorStore):
         )
 
     def finalize_index(self, name: str, vector_mode: str = "dense") -> None:
-        if vector_mode == "sparse":
-            print(f"  sparse 인덱스 완료 (inverted index)", flush=True)
-            return
-        if vector_mode == "colbert":
-            # colbert는 680만+ HNSW 노드 재구성 → 수 시간 + OOM
-            # m=0(flat search)으로 정확한 MaxSim 계산 — 벤치마크에 더 적합
-            print(f"  colbert 인덱스 완료 (flat/brute-force MaxSim)", flush=True)
-            return
-        from qdrant_client.models import HnswConfigDiff
-        self._client.update_collection(
-            collection_name=name,
-            hnsw_config=HnswConfigDiff(m=32, ef_construct=256),
-        )
-        print(f"  HNSW 활성화: m=32, ef_construct=256", flush=True)
+        # 모든 모드 m=0 유지 (flat/exact search)
+        # dense HNSW 재구성은 68K×1024 on_disk 기준 수십분 block → 스킵
+        labels = {"dense": "flat cosine", "sparse": "inverted index", "colbert": "flat MaxSim"}
+        print(f"  인덱스 완료 ({labels.get(vector_mode, vector_mode)})", flush=True)
 
     def search_batch(
         self,
@@ -173,7 +163,7 @@ class QdrantStore(VectorStore):
                     all_results.append([(r.payload["doc_id"], r.score) for r in result.points])
 
         else:  # dense
-            from qdrant_client.models import QueryRequest, SearchParams
+            from qdrant_client.models import QueryRequest
             for start in range(0, n, CHUNK):
                 end = min(start + CHUNK, n)
                 batch = self._client.query_batch_points(
@@ -181,7 +171,6 @@ class QdrantStore(VectorStore):
                     requests=[
                         QueryRequest(
                             query=vectors[i].tolist(),  # 1D: [dim1, dim2, ...]
-                            params=SearchParams(hnsw_ef=256),
                             limit=top_k,
                             with_payload=True,
                         )

@@ -56,14 +56,14 @@ class EmbeddingModel:
         else:
             model_kwargs["torch_dtype"] = getattr(torch, dtype_str)
 
-        tokenizer_kwargs: dict = {}
+        processor_kwargs: dict = {}
         if model_id in _FLASH_ATTN_MODELS:
             model_kwargs["attn_implementation"] = "flash_attention_2"
             # last_token_pool 방식: 마지막 위치가 실제 토큰이어야 함
-            tokenizer_kwargs["padding_side"] = "left"
+            processor_kwargs["padding_side"] = "left"
 
         self._model = SentenceTransformer(model_id, model_kwargs=model_kwargs,
-                                          tokenizer_kwargs=tokenizer_kwargs)
+                                          processor_kwargs=processor_kwargs)
         self._dim: int = self._model.encode(["dim probe"], show_progress_bar=False).shape[1]
 
     @property
