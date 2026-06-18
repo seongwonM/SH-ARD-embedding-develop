@@ -125,7 +125,9 @@ class BGEM3Model:
 
         self._model = BGEM3FlagModel(_BGE_M3_ID, use_fp16=use_fp16)
 
-        # 실제 device 확인
+        if cuda_available:
+            self._model.model = self._model.model.cuda()
+
         try:
             actual_device = next(self._model.model.parameters()).device
             print(f"[BGEM3] 모델 device: {actual_device}", flush=True)
