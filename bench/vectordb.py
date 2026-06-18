@@ -1,21 +1,10 @@
 """
-VectorDB 추상화 레이어.
+VectorDB 추상화 레이어 (Qdrant Rust 서버 전용).
 
-VectorDB 교체 방법:
-  - Qdrant(기본): QdrantStore 그대로 사용
-  - 다른 VectorDB(Milvus, Chroma, Weaviate 등):
-      1. VectorStore 인터페이스를 구현하는 새 클래스 작성
-      2. runner.py 의 build_store() 호출 부분에서 해당 클래스로 교체
-      인터페이스만 맞추면 runner.py / evaluator.py 코드는 무수정.
-
-Qdrant 파라미터 근거:
-  - bulk insert 중 m=0: HNSW graph 재구성 thrashing 방지 (Qdrant 공식 권장)
-    Source: https://qdrant.tech/articles/vector-search-resource-optimization/
-  - 완료 후 m=32, ef_construct=256: 고품질 recall 목적 벤치마크 균형값
-    Source: https://qdrant.tech/documentation/tutorials-search-engineering/retrieval-quality/
-  - search hnsw_ef=256: ef_construct와 동일값 → 최대 recall 보장
-  - search_batch 대신 query_batch_points: qdrant-client 1.7+ 공식 API
-    (search_batch는 deprecated 후 removed)
+vector_mode별 구성:
+  dense  : VectorParams cosine, flat exact (m=0)
+  sparse : SparseVectorParams — Rust 네이티브 inverted index
+  colbert: MultiVectorConfig(MAX_SIM) — Rust 네이티브 multivector
 """
 from __future__ import annotations
 
@@ -24,61 +13,33 @@ import math
 
 import numpy as np
 
-_UPSERT_CHUNK = 2_000
+_ENCODE_CHUNK = 2_000   # 인코딩 단위 (메모리 제어)
+_UPLOAD_BATCH = 256     # Qdrant upload_points 내부 배치 크기
 
 
 # ── 인터페이스 ────────────────────────────────────────────────────────────────
 
 class VectorStore:
-    """VectorDB 교체 시 이 인터페이스를 구현하세요."""
-
-    def has_collection(self, name: str) -> bool:
-        raise NotImplementedError
-
-    def collection_size(self, name: str) -> int:
-        raise NotImplementedError
-
-    def create_collection(self, name: str, dim: int) -> None:
-        raise NotImplementedError
-
-    def upsert_vectors(
-        self,
-        name:     str,
-        offset:   int,
-        doc_ids:  list[str],
-        vectors:  np.ndarray,
-    ) -> None:
-        raise NotImplementedError
-
-    def finalize_index(self, name: str) -> None:
-        raise NotImplementedError
-
-    def search_batch(
-        self,
-        name:    str,
-        vectors: np.ndarray,
-        top_k:   int,
-    ) -> list[list[tuple[str, float]]]:
-        """(doc_id, score) 튜플 리스트의 리스트 반환."""
-        raise NotImplementedError
-
-    def drop_collection(self, name: str) -> None:
-        raise NotImplementedError
+    def has_collection(self, name: str) -> bool:                    raise NotImplementedError
+    def collection_size(self, name: str) -> int:                    raise NotImplementedError
+    def create_collection(self, name: str, dim: int, vector_mode: str = "dense") -> None: raise NotImplementedError
+    def upload_stream(self, name: str, points, vector_mode: str = "dense") -> None: raise NotImplementedError
+    def finalize_index(self, name: str, vector_mode: str = "dense") -> None:  raise NotImplementedError
+    def search_batch(self, name: str, vectors, top_k: int, vector_mode: str = "dense") -> list[list[tuple[str, float]]]: raise NotImplementedError
+    def drop_collection(self, name: str) -> None:                   raise NotImplementedError
 
 
 # ── Qdrant 구현 ───────────────────────────────────────────────────────────────
 
 class QdrantStore(VectorStore):
-    """Qdrant on-disk 또는 원격 서버 VectorDB."""
+    """Qdrant Rust 서버 기반. dense/sparse/colbert 모두 서버 네이티브 API."""
 
-    def __init__(self, *, path: str | None = None, url: str | None = None) -> None:
+    def __init__(self, url: str) -> None:
         from qdrant_client import QdrantClient
-        if url:
-            self._client = QdrantClient(url=url)
-            print(f"[Qdrant] 원격 서버: {url}", flush=True)
-        else:
-            self._client = QdrantClient(path=path)
-            print(f"[Qdrant] on-disk: {path}", flush=True)
+        self._client = QdrantClient(url=url, timeout=300)
+        print(f"[Qdrant] 서버: {url}", flush=True)
+
+    # ── 컬렉션 존재 / 크기 ────────────────────────────────────────────────────
 
     def has_collection(self, name: str) -> bool:
         return name in {c.name for c in self._client.get_collections().collections}
@@ -86,52 +47,82 @@ class QdrantStore(VectorStore):
     def collection_size(self, name: str) -> int:
         return self._client.get_collection(name).points_count
 
-    def create_collection(self, name: str, dim: int) -> None:
-        from qdrant_client.models import Distance, VectorParams, HnswConfigDiff
-        self._client.create_collection(
-            collection_name=name,
-            vectors_config=VectorParams(size=dim, distance=Distance.COSINE, on_disk=True),
-            hnsw_config=HnswConfigDiff(m=0),  # bulk insert 중 graph 구성 억제
-            on_disk_payload=True,
-        )
-        print(f"  Qdrant 컬렉션 생성: {name}  dim={dim}", flush=True)
+    # ── 컬렉션 생성 ───────────────────────────────────────────────────────────
 
-    def upsert_vectors(
-        self,
-        name:    str,
-        offset:  int,
-        doc_ids: list[str],
-        vectors: np.ndarray,
-    ) -> None:
-        from qdrant_client.models import PointStruct
-        self._client.upsert(
-            collection_name=name,
-            points=[
-                PointStruct(
-                    id=offset + i,
-                    vector=vectors[i].tolist(),
-                    payload={"doc_id": doc_ids[i]},
-                )
-                for i in range(len(doc_ids))
-            ],
+    def create_collection(self, name: str, dim: int, vector_mode: str = "dense") -> None:
+        from qdrant_client.models import (
+            Distance, VectorParams, HnswConfigDiff,
+            SparseVectorParams, SparseIndexParams,
+            MultiVectorConfig, MultiVectorComparator,
         )
 
-    def finalize_index(self, name: str) -> None:
-        """bulk insert 완료 후 HNSW 활성화."""
-        from qdrant_client.models import HnswConfigDiff
-        self._client.update_collection(
+        if vector_mode == "sparse":
+            self._client.create_collection(
+                collection_name=name,
+                vectors_config={},
+                sparse_vectors_config={
+                    "sparse": SparseVectorParams(
+                        index=SparseIndexParams(on_disk=False, full_scan_threshold=20_000),
+                    )
+                },
+                on_disk_payload=False,
+            )
+        elif vector_mode == "colbert":
+            self._client.create_collection(
+                collection_name=name,
+                vectors_config={
+                    "colbert": VectorParams(
+                        size=dim,
+                        distance=Distance.COSINE,
+                        multivector_config=MultiVectorConfig(
+                            comparator=MultiVectorComparator.MAX_SIM,
+                        ),
+                        on_disk=False,
+                    )
+                },
+                hnsw_config=HnswConfigDiff(m=0),
+                on_disk_payload=False,
+            )
+        else:  # dense
+            self._client.create_collection(
+                collection_name=name,
+                vectors_config=VectorParams(
+                    size=dim, distance=Distance.COSINE, on_disk=False,
+                ),
+                hnsw_config=HnswConfigDiff(m=0),
+                on_disk_payload=False,
+            )
+        print(f"  Qdrant 컬렉션 생성: {name}  mode={vector_mode}  dim={dim}", flush=True)
+
+    # ── 업로드 ────────────────────────────────────────────────────────────────
+
+    def upload_stream(self, name: str, points, vector_mode: str = "dense") -> None:
+        print("  [upload] upload_points 시작...", flush=True)
+        self._client.upload_points(
             collection_name=name,
-            hnsw_config=HnswConfigDiff(m=32, ef_construct=256),
+            points=points,
+            batch_size=_UPLOAD_BATCH,
+            parallel=1,
+            max_retries=3,
         )
-        print(f"  HNSW 활성화: m=32, ef_construct=256 (백그라운드 구성 중...)", flush=True)
+        print("  [upload] upload_points 완료", flush=True)
+
+    # ── 인덱스 마무리 ─────────────────────────────────────────────────────────
+
+    def finalize_index(self, name: str, vector_mode: str = "dense") -> None:
+        labels = {"dense": "flat cosine", "sparse": "sparse (native)", "colbert": "MaxSim (native)"}
+        print(f"  인덱스 완료 ({labels.get(vector_mode, vector_mode)})", flush=True)
+
+    # ── 검색 ─────────────────────────────────────────────────────────────────
 
     def search_batch(
         self,
-        name:    str,
-        vectors: np.ndarray,
-        top_k:   int,
+        name:        str,
+        vectors,
+        top_k:       int,
+        vector_mode: str = "dense",
     ) -> list[list[tuple[str, float]]]:
-        from qdrant_client.models import QueryRequest, SearchParams
+        from qdrant_client.models import QueryRequest, SparseVector, NamedSparseVector
 
         CHUNK = 256
         n = len(vectors)
@@ -139,25 +130,85 @@ class QdrantStore(VectorStore):
 
         for start in range(0, n, CHUNK):
             end = min(start + CHUNK, n)
-            batch = self._client.query_batch_points(
-                collection_name=name,
-                requests=[
+
+            if vector_mode == "sparse":
+                # vectors: list[dict[str|int, float]]  (lexical_weights)
+                requests = [
+                    QueryRequest(
+                        query=NamedSparseVector(
+                            name="sparse",
+                            vector=SparseVector(
+                                indices=[int(k) for k in vectors[i].keys()],
+                                values=list(vectors[i].values()),
+                            ),
+                        ),
+                        limit=top_k,
+                        with_payload=True,
+                        using="sparse",
+                    )
+                    for i in range(start, end)
+                ]
+            elif vector_mode == "colbert":
+                # vectors: list[np.ndarray [n_tokens, dim]]
+                requests = [
                     QueryRequest(
                         query=vectors[i].tolist(),
                         limit=top_k,
                         with_payload=True,
-                        params=SearchParams(hnsw_ef=256),
+                        using="colbert",
                     )
                     for i in range(start, end)
-                ],
+                ]
+            else:  # dense
+                requests = [
+                    QueryRequest(
+                        query=vectors[i].tolist(),
+                        limit=top_k,
+                        with_payload=True,
+                    )
+                    for i in range(start, end)
+                ]
+
+            batch = self._client.query_batch_points(
+                collection_name=name,
+                requests=requests,
             )
             for result in batch:
                 all_results.append([(r.payload["doc_id"], r.score) for r in result.points])
 
         return all_results
 
+    # ── 삭제 ─────────────────────────────────────────────────────────────────
+
     def drop_collection(self, name: str) -> None:
         self._client.delete_collection(name)
+
+
+# ── PointStruct 팩토리 ────────────────────────────────────────────────────────
+
+def _make_point(point_id: int, doc_id: str, vec, vector_mode: str):
+    from qdrant_client.models import PointStruct, SparseVector
+
+    if vector_mode == "sparse":
+        return PointStruct(
+            id=point_id,
+            vector={"sparse": SparseVector(
+                indices=[int(k) for k in vec],
+                values=list(vec.values()),
+            )},
+            payload={"doc_id": doc_id},
+        )
+    if vector_mode == "colbert":
+        return PointStruct(
+            id=point_id,
+            vector={"colbert": vec.astype(np.float32).tolist()},
+            payload={"doc_id": doc_id},
+        )
+    return PointStruct(
+        id=point_id,
+        vector=vec.tolist(),
+        payload={"doc_id": doc_id},
+    )
 
 
 # ── 인덱싱 오케스트레이터 ─────────────────────────────────────────────────────
@@ -169,44 +220,47 @@ def index_docs(
     docs:       dict,
     batch_size: int,
 ) -> None:
-    """
-    docs 전체를 store 에 인코딩 후 upsert.
-    벡터를 청크 단위로 처리해 RAM OOM 방지 (MIRACL 150만 건 대응).
-    """
     try:
         import torch
         _has_cuda = torch.cuda.is_available()
     except ImportError:
         _has_cuda = False
 
-    doc_ids = list(docs.keys())
-    n_total = len(doc_ids)
-    n_chunks  = math.ceil(n_total / _UPSERT_CHUNK)
-    _log_every = max(1, n_chunks // 10)
+    vector_mode = getattr(model, "vector_mode", "dense")
+    doc_ids     = list(docs.keys())
+    n_total     = len(doc_ids)
+    n_chunks    = math.ceil(n_total / _ENCODE_CHUNK)
+    _log_every  = max(1, n_chunks // 10)
 
-    store.create_collection(name, model.dim)
+    store.create_collection(name, model.dim, vector_mode=vector_mode)
 
-    for ci in range(n_chunks):
-        s = ci * _UPSERT_CHUNK
-        e = min(s + _UPSERT_CHUNK, n_total)
-        chunk_ids = doc_ids[s:e]
-        texts = [
-            f"{docs[d].get('title', '')} {docs[d]['chunk']}".strip()
-            for d in chunk_ids
-        ]
+    def _point_generator():
+        point_id = 0
+        for ci in range(n_chunks):
+            s = ci * _ENCODE_CHUNK
+            e = min(s + _ENCODE_CHUNK, n_total)
+            chunk_ids = doc_ids[s:e]
+            texts = [
+                f"{docs[d].get('title', '')} {docs[d]['chunk']}".strip()
+                for d in chunk_ids
+            ]
 
-        embs = model.encode_docs(texts, batch_size)
-        del texts
-        store.upsert_vectors(name, s, chunk_ids, embs)
-        del embs
+            embs = model.encode_docs(texts, batch_size)
+            del texts
 
-        if _has_cuda:
-            torch.cuda.synchronize()
-            torch.cuda.empty_cache()
-        gc.collect()
+            for doc_id, vec in zip(chunk_ids, embs):
+                yield _make_point(point_id, doc_id, vec, vector_mode)
+                point_id += 1
 
-        if (ci + 1) % _log_every == 0 or ci + 1 == n_chunks:
-            print(f"  upsert {e:,}/{n_total:,}", flush=True)
+            del embs
+            if _has_cuda:
+                torch.cuda.synchronize()
+                torch.cuda.empty_cache()
+            gc.collect()
 
-    store.finalize_index(name)
+            if (ci + 1) % _log_every == 0 or ci + 1 == n_chunks:
+                print(f"  인코딩 {e:,}/{n_total:,}", flush=True)
+
+    store.upload_stream(name, _point_generator(), vector_mode=vector_mode)
+    store.finalize_index(name, vector_mode=vector_mode)
     print(f"  인덱싱 완료: {n_total:,}건", flush=True)
