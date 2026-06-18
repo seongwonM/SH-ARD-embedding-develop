@@ -196,6 +196,18 @@ def run_model(
     _rank1_correct = _hit_ids[0] in _diag_relevant if _hit_ids else False
     print(f"  [진단] rank-1 correct={_rank1_correct}", flush=True)
 
+    # 쿼리 텍스트 + 검색 1위 문서 + 관련 문서 실제 내용 출력 (데이터 품질 확인)
+    _q_text = combined_queries.get(_diag_qid, "")
+    print(f"  [진단] 쿼리 텍스트: {_q_text[:120]!r}", flush=True)
+    if _hit_ids:
+        _top1_doc = combined_docs.get(_hit_ids[0], {})
+        print(f"  [진단] 검색1위 문서({_hit_ids[0]}): title={_top1_doc.get('title','')[:60]!r}  chunk={_top1_doc.get('chunk','')[:120]!r}", flush=True)
+    if _diag_relevant:
+        _rel_id = next(iter(_diag_relevant))
+        _rel_doc = combined_docs.get(_rel_id, {})
+        _in_corpus = _rel_id in combined_docs
+        print(f"  [진단] qrel 관련문서({_rel_id}) corpus포함={_in_corpus}: title={_rel_doc.get('title','')[:60]!r}  chunk={_rel_doc.get('chunk','')[:120]!r}", flush=True)
+
     # 평가
     metrics = evaluate(run, combined_qrels)
 
