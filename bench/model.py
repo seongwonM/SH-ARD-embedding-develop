@@ -58,9 +58,14 @@ class EmbeddingModel:
 
         processor_kwargs: dict = {}
         if model_id in _FLASH_ATTN_MODELS:
-            model_kwargs["attn_implementation"] = "flash_attention_2"
-            # last_token_pool 방식: 마지막 위치가 실제 토큰이어야 함
+            # last_token_pool 방식: 마지막 위치가 실제 토큰이어야 함 (flash_attn 유무 관계없이 필수)
             processor_kwargs["padding_side"] = "left"
+            try:
+                import flash_attn  # noqa: F401
+                model_kwargs["attn_implementation"] = "flash_attention_2"
+                print("  [모델] flash_attn 감지 → flash_attention_2 활성화", flush=True)
+            except Exception:
+                print("  [모델] flash_attn 없음/오류 → 표준 attention 사용", flush=True)
 
         self._model = SentenceTransformer(model_id, model_kwargs=model_kwargs,
                                           processor_kwargs=processor_kwargs)

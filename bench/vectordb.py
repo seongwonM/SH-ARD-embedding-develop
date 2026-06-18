@@ -83,12 +83,14 @@ class QdrantStore(VectorStore):
                 hnsw_config=HnswConfigDiff(m=0),
                 on_disk_payload=False,
             )
-        else:  # dense
+        else:  # dense — named vector "dense"로 통일 (sparse/colbert와 동일 패턴)
             self._client.create_collection(
                 collection_name=name,
-                vectors_config=VectorParams(
-                    size=dim, distance=Distance.COSINE, on_disk=False,
-                ),
+                vectors_config={
+                    "dense": VectorParams(
+                        size=dim, distance=Distance.COSINE, on_disk=False,
+                    )
+                },
                 hnsw_config=HnswConfigDiff(m=0),
                 on_disk_payload=False,
             )
@@ -130,22 +132,22 @@ class QdrantStore(VectorStore):
             end = min(start + CHUNK, n)
 
             if vector_mode == "dense":
-                # search_batch (구버전 API) 사용: unnamed vector의 score=0 호환성 버그 회피
-                from qdrant_client.models import SearchRequest
+                from qdrant_client.models import QueryRequest
                 requests = [
-                    SearchRequest(
-                        vector=vectors[i].tolist(),
+                    QueryRequest(
+                        query=vectors[i].tolist(),
+                        using="dense",
                         limit=top_k,
                         with_payload=True,
                     )
                     for i in range(start, end)
                 ]
-                batch = self._client.search_batch(
+                batch = self._client.query_batch_points(
                     collection_name=name,
                     requests=requests,
                 )
                 for result in batch:
-                    all_results.append([(r.payload["doc_id"], r.score) for r in result])
+                    all_results.append([(r.payload["doc_id"], r.score) for r in result.points])
 
             elif vector_mode == "sparse":
                 from qdrant_client.models import QueryRequest, SparseVector
@@ -216,7 +218,7 @@ def _make_point(point_id: int, doc_id: str, vec, vector_mode: str):
         )
     return PointStruct(
         id=point_id,
-        vector=vec.tolist(),
+        vector={"dense": vec.tolist()},
         payload={"doc_id": doc_id},
     )
 

@@ -100,7 +100,7 @@ def run_model(
     model_dtype:      str,
     vector_mode:      str = "dense",
 ) -> dict:
-    mode_suffix = f"_{vector_mode}" if vector_mode != "dense" else ""
+    mode_suffix = f"_{vector_mode}"
     collection = _safe_name(model_id) + mode_suffix
 
     print(f"\n{'='*64}")
