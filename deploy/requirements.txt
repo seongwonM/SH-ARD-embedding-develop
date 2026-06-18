@@ -5,6 +5,5 @@ pytrec-eval-terrier
 numpy
 accelerate>=0.30.0
 psutil
-datasets>=2.14.0
 pandas>=2.0.0
 pyarrow>=14.0.0
