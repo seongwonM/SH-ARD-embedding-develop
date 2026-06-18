@@ -8,17 +8,13 @@ else
     TARGET="$REPO"
 fi
 
-for i in 1 2 3 4 5; do
-    rm -rf /tmp/latest && git clone --depth=1 "$TARGET" /tmp/latest 2>&1 && break
-    echo "[startup] git clone 실패 (시도 $i/5) — 10초 후 재시도..."
-    sleep 10
-done
-
-if [ -d /tmp/latest ]; then
+# git clone 한 번만 시도 — 실패해도 빌드된 코드로 계속 진행
+if rm -rf /tmp/latest && git clone --depth=1 "$TARGET" /tmp/latest 2>&1; then
     cp -rf /tmp/latest/bench /app/
     echo "[startup] 코드 업데이트 완료"
 else
-    echo "[startup] git clone 최종 실패 — 빌드된 코드로 실행"
+    echo "[startup] git clone 실패 — 빌드된 코드로 실행"
+    mkdir -p /tmp/latest
 fi
 
 MODEL_SAFE=$(echo "${MODEL_ID:-}" | tr '/' '_')
@@ -53,5 +49,5 @@ if [ -n "${GH_TOKEN:-}" ]; then
     echo "[git] 결과 push 완료"
 fi
 
-echo "[완료] 대기 중 (재시작 방지)"
-sleep infinity
+echo "[완료] 종료"
+# sleep infinity 제거 — 완료 후 컨테이너 자동 종료
