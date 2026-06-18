@@ -113,10 +113,25 @@ class BGEM3Model:
 
         assert vector_mode in _BGE_M3_MODES, f"지원하지 않는 BGE-M3 모드: {vector_mode}"
 
+        import torch
         self.model_id    = _BGE_M3_ID
         self.vector_mode = vector_mode
         use_fp16 = dtype in ("auto", "fp16")
+
+        cuda_available = torch.cuda.is_available()
+        print(f"[BGEM3] CUDA available: {cuda_available}", flush=True)
+        if cuda_available:
+            print(f"[BGEM3] GPU: {torch.cuda.get_device_name(0)}", flush=True)
+
         self._model = BGEM3FlagModel(_BGE_M3_ID, use_fp16=use_fp16)
+
+        # 실제 device 확인
+        try:
+            actual_device = next(self._model.model.parameters()).device
+            print(f"[BGEM3] 모델 device: {actual_device}", flush=True)
+        except Exception as e:
+            print(f"[BGEM3] device 확인 실패: {e}", flush=True)
+
         self._dim = 1024  # dense 및 colbert 토큰 차원
 
     @property
