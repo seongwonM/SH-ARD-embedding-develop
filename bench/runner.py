@@ -260,12 +260,28 @@ def main() -> None:
                 all_results.append(json.load(f))
             continue
 
-        result = run_model(
-            model_id, store,
-            combined_docs, combined_queries, combined_qrels, task_names,
-            args.batch_size, args.model_dtype,
-            vector_mode=vector_mode,
-        )
+        try:
+            result = run_model(
+                model_id, store,
+                combined_docs, combined_queries, combined_qrels, task_names,
+                args.batch_size, args.model_dtype,
+                vector_mode=vector_mode,
+            )
+        except MemoryError as e:
+            print(f"\n[ERROR] RAM OOM: {e}", flush=True)
+            raise
+        except RuntimeError as e:
+            if "out of memory" in str(e).lower():
+                import torch
+                print(f"\n[ERROR] CUDA OOM: {e}", flush=True)
+                print(f"  GPU 할당: {torch.cuda.memory_allocated()/1e9:.1f}GB  "
+                      f"예약: {torch.cuda.memory_reserved()/1e9:.1f}GB", flush=True)
+            else:
+                print(f"\n[ERROR] RuntimeError: {e}", flush=True)
+            raise
+        except Exception as e:
+            print(f"\n[ERROR] {type(e).__name__}: {e}", flush=True)
+            raise
         all_results.append(result)
         with open(ckpt, "w", encoding="utf-8") as f:
             json.dump(result, f, ensure_ascii=False, indent=2, default=_json_default)
