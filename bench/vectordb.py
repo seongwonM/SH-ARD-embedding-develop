@@ -97,6 +97,7 @@ class QdrantStore(VectorStore):
 
     def upload_stream(self, name: str, points, vector_mode: str = "dense") -> None:
         """generator를 받아 upload_points로 streaming upsert (Qdrant 공식 권장 방식)."""
+        print(f"  [upload] upload_points 시작...", flush=True)
         self._client.upload_points(
             collection_name=name,
             points=points,
@@ -104,6 +105,7 @@ class QdrantStore(VectorStore):
             parallel=1,
             max_retries=3,
         )
+        print(f"  [upload] upload_points 완료", flush=True)
 
     def finalize_index(self, name: str, vector_mode: str = "dense") -> None:
         # 모든 모드 m=0 유지 (flat/exact search)
@@ -269,5 +271,6 @@ def index_docs(
                 print(f"  인코딩 {e:,}/{n_total:,}", flush=True)
 
     store.upload_stream(name, _point_generator(), vector_mode=vector_mode)
+    print(f"  [index] finalize_index 진입", flush=True)
     store.finalize_index(name, vector_mode=vector_mode)
     print(f"  인덱싱 완료: {n_total:,}건", flush=True)
