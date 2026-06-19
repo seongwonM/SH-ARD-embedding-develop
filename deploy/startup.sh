@@ -24,14 +24,10 @@ DB_SUFFIX="_${VECTOR_DB}"
 REPORTS_PATH="/workspace/reports/${MODEL_SAFE:-all}${MODE_SUFFIX:-}${DB_SUFFIX}"
 
 if [ "$VECTOR_DB" = "milvus" ]; then
-    # Milvus Standalone 시작
-    MILVUS_HOME="/workspace/milvus_data/${MODEL_SAFE:-default}${MODE_SUFFIX:-}"
-    mkdir -p "$MILVUS_HOME"
-    MILVUS_DATA_PATH="$MILVUS_HOME" milvus run standalone &
-    MILVUS_PID=$!
-    echo "[milvus] 서버 시작 (PID=$MILVUS_PID), 준비 대기 중..."
-    until curl -sf http://localhost:9091/healthz >/dev/null 2>&1; do sleep 2; done
-    echo "[milvus] 서버 준비 완료"
+    # milvus-lite: 별도 서버 불필요 — 파일 기반 embedded DB
+    mkdir -p /workspace/milvus_data
+    MILVUS_URI="/workspace/milvus_data/${MODEL_SAFE:-default}${MODE_SUFFIX:-}.db"
+    echo "[milvus] milvus-lite 사용: ${MILVUS_URI}"
 else
     # Qdrant 서버 시작 (pod별 독립 스토리지 — RocksDB lock 충돌 방지)
     QDRANT_STORAGE="/workspace/qdrant_storage/${MODEL_SAFE:-default}${MODE_SUFFIX:-}"
@@ -74,7 +70,7 @@ python -m bench.runner \
     --out "${REPORTS_PATH}" \
     --vectordb "${VECTOR_DB:-qdrant}" \
     --qdrant-url http://localhost:6333 \
-    --milvus-uri http://localhost:19530 \
+    --milvus-uri "${MILVUS_URI:-/workspace/milvus_data/default.db}" \
     --data-root "${DATA_DIR}"
 
 if [ -n "${GH_TOKEN:-}" ]; then
