@@ -122,8 +122,6 @@ class QdrantStore(VectorStore):
         top_k:       int,
         vector_mode: str = "dense",
     ) -> list[list[tuple[str, float]]]:
-        from qdrant_client.models import QueryRequest, SparseVector, NamedSparseVector
-
         CHUNK = 256
         n = len(vectors)
         all_results: list[list[tuple[str, float]]] = []
@@ -131,16 +129,31 @@ class QdrantStore(VectorStore):
         for start in range(0, n, CHUNK):
             end = min(start + CHUNK, n)
 
-            if vector_mode == "sparse":
-                # vectors: list[dict[str|int, float]]  (lexical_weights)
+            if vector_mode == "dense":
+                # query_batch_points는 unnamed vector에서 score=0 버그 있음 → search_batch 우회
+                from qdrant_client.models import SearchRequest
+                requests = [
+                    SearchRequest(
+                        vector=vectors[i].tolist(),
+                        limit=top_k,
+                        with_payload=True,
+                    )
+                    for i in range(start, end)
+                ]
+                batch = self._client.search_batch(
+                    collection_name=name,
+                    requests=requests,
+                )
+                for result in batch:
+                    all_results.append([(r.payload["doc_id"], r.score) for r in result])
+
+            elif vector_mode == "sparse":
+                from qdrant_client.models import QueryRequest, SparseVector
                 requests = [
                     QueryRequest(
-                        query=NamedSparseVector(
-                            name="sparse",
-                            vector=SparseVector(
-                                indices=[int(k) for k in vectors[i].keys()],
-                                values=list(vectors[i].values()),
-                            ),
+                        query=SparseVector(
+                            indices=[int(k) for k in vectors[i].keys()],
+                            values=list(vectors[i].values()),
                         ),
                         limit=top_k,
                         with_payload=True,
@@ -148,8 +161,15 @@ class QdrantStore(VectorStore):
                     )
                     for i in range(start, end)
                 ]
-            elif vector_mode == "colbert":
-                # vectors: list[np.ndarray [n_tokens, dim]]
+                batch = self._client.query_batch_points(
+                    collection_name=name,
+                    requests=requests,
+                )
+                for result in batch:
+                    all_results.append([(r.payload["doc_id"], r.score) for r in result.points])
+
+            else:  # colbert
+                from qdrant_client.models import QueryRequest
                 requests = [
                     QueryRequest(
                         query=vectors[i].tolist(),
@@ -159,22 +179,12 @@ class QdrantStore(VectorStore):
                     )
                     for i in range(start, end)
                 ]
-            else:  # dense
-                requests = [
-                    QueryRequest(
-                        query=vectors[i].tolist(),
-                        limit=top_k,
-                        with_payload=True,
-                    )
-                    for i in range(start, end)
-                ]
-
-            batch = self._client.query_batch_points(
-                collection_name=name,
-                requests=requests,
-            )
-            for result in batch:
-                all_results.append([(r.payload["doc_id"], r.score) for r in result.points])
+                batch = self._client.query_batch_points(
+                    collection_name=name,
+                    requests=requests,
+                )
+                for result in batch:
+                    all_results.append([(r.payload["doc_id"], r.score) for r in result.points])
 
         return all_results
 
