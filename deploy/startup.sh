@@ -19,9 +19,9 @@ fi
 
 MODEL_SAFE=$(echo "${MODEL_ID:-}" | tr '/' '_')
 MODE_SUFFIX=${VECTOR_MODE:+_${VECTOR_MODE}}
-REPORTS_PATH="/workspace/reports/${MODEL_SAFE:-all}${MODE_SUFFIX:-}"
-
 VECTOR_DB="${VECTOR_DB:-qdrant}"
+DB_SUFFIX="_${VECTOR_DB}"
+REPORTS_PATH="/workspace/reports/${MODEL_SAFE:-all}${MODE_SUFFIX:-}${DB_SUFFIX}"
 
 if [ "$VECTOR_DB" = "milvus" ]; then
     # Milvus Standalone 시작
@@ -86,7 +86,7 @@ if [ -n "${GH_TOKEN:-}" ]; then
         git config user.email 'pod@runpod.io'
         git config user.name 'RunPod'
         mkdir -p results
-        cp "$RESULT_FILE" "results/${MODEL_SAFE:-all}${MODE_SUFFIX:-}.json"
+        cp "$RESULT_FILE" "results/${MODEL_SAFE:-all}${MODE_SUFFIX:-}${DB_SUFFIX}.json"
         echo "[git] 결과 파일 복사 완료"
         git add results/
         if git diff --cached --quiet; then
