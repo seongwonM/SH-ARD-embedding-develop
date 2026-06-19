@@ -69,29 +69,10 @@ class EmbeddingModel:
 
         self._model = SentenceTransformer(model_id, model_kwargs=model_kwargs,
                                           processor_kwargs=processor_kwargs)
-        # processor_kwargs만으로 padding_side가 반영 안 될 수 있으므로 명시적으로 설정
         if model_id in _FLASH_ATTN_MODELS and hasattr(self._model, "tokenizer"):
             self._model.tokenizer.padding_side = "left"
-            print(f"  [모델] padding_side={self._model.tokenizer.padding_side}", flush=True)
 
         self._dim: int = self._model.encode(["dim probe"], show_progress_bar=False).shape[1]
-
-        # padding_side 검증: 길이 차이가 큰 두 텍스트를 배치로 인코딩 vs 단건으로 비교
-        # cosine ≈ 1.0이면 left padding 정상, << 1.0이면 right padding으로 마지막 토큰이 PAD
-        if model_id in _FLASH_ATTN_MODELS:
-            _t_short = "안녕"
-            _t_long  = "안녕하세요 " * 60  # 단어 60개 → 배치 내 길이 차이 극대화
-            _batch   = self._model.encode([_t_short, _t_long], normalize_embeddings=True,
-                                          show_progress_bar=False)
-            _single  = self._model.encode([_t_short], normalize_embeddings=True,
-                                          show_progress_bar=False)
-            _cos = float(np.dot(_batch[0], _single[0]))
-            print(
-                f"  [padding 검증] 배치 vs 단건 cosine={_cos:.4f}"
-                f"  (1.0에 가까워야 left padding 정상; << 1.0이면 PAD 토큰 풀링 버그)",
-                flush=True,
-            )
-            del _t_short, _t_long, _batch, _single
 
     @property
     def dim(self) -> int:
@@ -158,11 +139,7 @@ class BGEM3Model:
         return self._dim
 
     def _encode(self, texts: list[str], batch_size: int):
-        import contextlib, io, psutil, os, torch
-        proc = psutil.Process(os.getpid())
-        mem_before = proc.memory_info().rss / 1e9
-        gpu_before = torch.cuda.memory_allocated() / 1e9 if torch.cuda.is_available() else 0.0
-
+        import contextlib, io
         with contextlib.redirect_stderr(io.StringIO()):
             out = self._model.encode(
                 texts,
@@ -171,10 +148,6 @@ class BGEM3Model:
                 return_sparse=       self.vector_mode == "sparse",
                 return_colbert_vecs= self.vector_mode == "colbert",
             )
-
-        mem_after = proc.memory_info().rss / 1e9
-        gpu_after = torch.cuda.memory_allocated() / 1e9 if torch.cuda.is_available() else 0.0
-        print(f"  [encode] RAM {mem_before:.1f}→{mem_after:.1f}GB  GPU {gpu_before:.1f}→{gpu_after:.1f}GB  n={len(texts)}", flush=True)
         return out
 
     def encode_docs(self, texts: list[str], batch_size: int):
@@ -182,12 +155,9 @@ class BGEM3Model:
         if self.vector_mode == "dense":
             return _to_numpy(out["dense_vecs"])
         elif self.vector_mode == "sparse":
-            return out["lexical_weights"]   # list[dict[str, float]]
+            return out["lexical_weights"]
         else:
-            vecs = out["colbert_vecs"]      # list[np.ndarray [n_tokens, 1024]]
-            total_mb = sum(v.nbytes for v in vecs) / 1e6
-            print(f"  [colbert] {len(vecs)}docs  avg_tokens={sum(v.shape[0] for v in vecs)/len(vecs):.0f}  total={total_mb:.0f}MB", flush=True)
-            return vecs
+            return out["colbert_vecs"]
 
     def encode_queries(self, texts: list[str], batch_size: int):
         return self.encode_docs(texts, batch_size)

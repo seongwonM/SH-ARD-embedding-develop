@@ -26,6 +26,7 @@ QDRANT_STORAGE="/workspace/qdrant_storage/${MODEL_SAFE:-default}${MODE_SUFFIX:-}
 mkdir -p "$QDRANT_STORAGE"
 QDRANT__STORAGE__STORAGE_PATH="$QDRANT_STORAGE" \
 QDRANT__LOG_LEVEL=WARN \
+QDRANT__SERVICE__MAX_REQUEST_SIZE_MB=2048 \
 qdrant --disable-telemetry &
 QDRANT_PID=$!
 echo "[qdrant] 서버 시작 (PID=$QDRANT_PID), 준비 대기 중..."

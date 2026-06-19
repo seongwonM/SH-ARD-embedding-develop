@@ -22,7 +22,6 @@ import json
 import math
 import os
 import re
-import sys
 import time
 from pathlib import Path
 
@@ -45,24 +44,6 @@ _DEFAULT_MODELS = [
 
 def _safe_name(model_id: str) -> str:
     return re.sub(r"[^a-z0-9_]", "_", model_id.lower())[:200]
-
-
-def _mem(label: str = "") -> None:
-    parts = []
-    try:
-        import psutil
-        parts.append(f"CPU={psutil.Process().memory_info().rss / 1e9:.1f}GB")
-    except ImportError:
-        pass
-    try:
-        import torch
-        if torch.cuda.is_available():
-            parts.append(f"GPU={torch.cuda.memory_allocated()/1e9:.1f}GB")
-    except ImportError:
-        pass
-    if parts:
-        tag = f"[MEM:{label}] " if label else "[MEM] "
-        print(tag + " ".join(parts), flush=True)
 
 
 def _json_default(obj):
@@ -111,7 +92,6 @@ def run_model(
     t_load_start = time.time()
     model = build_model(model_id, vector_mode=vector_mode, dtype=model_dtype)
     model_load_sec = round(time.time() - t_load_start, 2)
-    _mem("모델 로드")
     print(f"  모델 로드: {model_load_sec}s", flush=True)
 
     # 인덱스 상태 확인 및 인덱싱
@@ -164,55 +144,10 @@ def run_model(
     run = {q_ids[i]: {doc_id: score for doc_id, score in hits}
            for i, hits in enumerate(raw_results)}
 
-    # ── 검색 결과 진단 (첫 쿼리 기준) ─────────────────────────────────────────
-    _diag_qid      = q_ids[0]
-    _diag_hits     = raw_results[0]                    # [(doc_id, score), ...]
-    _diag_qrel     = combined_qrels.get(_diag_qid, {}) # {doc_id: score}
-    _diag_relevant = {d for d, s in _diag_qrel.items() if s >= 1}
-
-    _hit_ids    = [d for d, _ in _diag_hits]
-    _hit_scores = [s for _, s in _diag_hits]
-    _found_in_100 = sum(1 for d in _hit_ids if d in _diag_relevant)
-
-    print(
-        f"  [진단] query_id={_diag_qid!r}  qrels_relevant={len(_diag_relevant)}건"
-        f"  top100에서_found={_found_in_100}건",
-        flush=True,
-    )
-    print(
-        f"  [진단] score 분포: max={max(_hit_scores):.4f}  min={min(_hit_scores):.4f}"
-        f"  top3={[round(s,4) for s in _hit_scores[:3]]}",
-        flush=True,
-    )
-    print(
-        f"  [진단] top3 doc_ids={_hit_ids[:3]}",
-        flush=True,
-    )
-    print(
-        f"  [진단] qrels top3={list(_diag_relevant)[:3]}",
-        flush=True,
-    )
-    # rank-1 결과가 relevant인지 명시
-    _rank1_correct = _hit_ids[0] in _diag_relevant if _hit_ids else False
-    print(f"  [진단] rank-1 correct={_rank1_correct}", flush=True)
-
-    # 쿼리 텍스트 + 검색 1위 문서 + 관련 문서 실제 내용 출력 (데이터 품질 확인)
-    _q_text = combined_queries.get(_diag_qid, "")
-    print(f"  [진단] 쿼리 텍스트: {_q_text[:120]!r}", flush=True)
-    if _hit_ids:
-        _top1_doc = combined_docs.get(_hit_ids[0], {})
-        print(f"  [진단] 검색1위 문서({_hit_ids[0]}): title={_top1_doc.get('title','')[:60]!r}  chunk={_top1_doc.get('chunk','')[:120]!r}", flush=True)
-    if _diag_relevant:
-        _rel_id = next(iter(_diag_relevant))
-        _rel_doc = combined_docs.get(_rel_id, {})
-        _in_corpus = _rel_id in combined_docs
-        print(f"  [진단] qrel 관련문서({_rel_id}) corpus포함={_in_corpus}: title={_rel_doc.get('title','')[:60]!r}  chunk={_rel_doc.get('chunk','')[:120]!r}", flush=True)
-
     # 평가
     metrics = evaluate(run, combined_qrels)
 
     model.close()
-    _mem("모델 해제 후")
 
     print(
         f"\n  NDCG@10={metrics.get('ndcg_at_10')}  @20={metrics.get('ndcg_at_20')}  "
@@ -286,7 +221,6 @@ def main() -> None:
     combined_docs, combined_queries, combined_qrels = load_from_dir(args.data_root)
     task_names = [Path(args.data_root).name]
     print(f"  로드 완료 ({time.time()-t0:.0f}s)", flush=True)
-    _mem("corpus 병합 완료")
 
     all_results = []
     t0_total = time.time()

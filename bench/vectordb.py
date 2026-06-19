@@ -99,11 +99,13 @@ class QdrantStore(VectorStore):
     # ── 업로드 ────────────────────────────────────────────────────────────────
 
     def upload_stream(self, name: str, points, vector_mode: str = "dense") -> None:
-        print("  [upload] upload_points 시작...", flush=True)
+        # colbert: 토큰당 1024dim 멀티벡터라 doc당 ~2MB(JSON) → 배치 줄여서 요청 크기 제한
+        batch = 16 if vector_mode == "colbert" else _UPLOAD_BATCH
+        print(f"  [upload] upload_points 시작... (batch={batch})", flush=True)
         self._client.upload_points(
             collection_name=name,
             points=points,
-            batch_size=_UPLOAD_BATCH,
+            batch_size=batch,
             parallel=1,
             max_retries=3,
         )
