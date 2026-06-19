@@ -24,39 +24,75 @@ DB_SUFFIX="_${VECTOR_DB}"
 REPORTS_PATH="/workspace/reports/${MODEL_SAFE:-all}${MODE_SUFFIX:-}${DB_SUFFIX}"
 
 if [ "$VECTOR_DB" = "milvus" ]; then
-    # Milvus Standalone (DEB 패키지 바이너리) — embedded etcd + local storage
+    # Milvus Standalone (DEB 패키지 바이너리) — embedded etcd + local storage + natsmq
     MILVUS_DATA="/workspace/milvus_data/${MODEL_SAFE:-default}${MODE_SUFFIX:-}"
-    # 이전 크래시로 인한 stale etcd 데이터(BoltDB 락/WAL 불일치) 방지: 항상 fresh start
+    # 이전 크래시로 인한 stale etcd/natsmq 데이터 방지: 항상 fresh start
     rm -rf "${MILVUS_DATA}"
-    mkdir -p "${MILVUS_DATA}/etcd"
+    mkdir -p "${MILVUS_DATA}/etcd" "${MILVUS_DATA}/nats" "${MILVUS_DATA}/local"
 
-    # Milvus 모든 컴포넌트 gRPC 포트 설정
-    # - 실제 gRPC 리슨 포트 키: {component}.grpc.serverPort (단순 .port 아님)
-    # - DEB 기본값은 DefaultServerPort=19530 으로 전체 컴포넌트가 동일 → 충돌
-    # - /etc/milvus/configs/milvus.yaml 이 DEB 패키지 기본 config 경로
-    # GrpcServerConfig.Init(domain, base) 실제 키: domain+".port" (grpc.serverPort 아님)
-    # 기본값: DefaultServerPort=19530 → coord 전체가 동일 → 충돌
-    # node(queryNode/dataNode/indexNode)는 standalone에서 GetAvailablePort()로 동적 할당
+    # 완전한 milvus.yaml 작성:
+    # - 이 DEB 바이너리는 Rocksmq:false, Natsmq:true → mq.type: natsmq 명시 필요
+    # - DEB 원본 yaml 덮어쓰기 → 모든 설정을 여기에 포함 (포트, MQ, etcd, storage)
+    # - etcd.data.dir 키는 yaml에도 쓰되 env var ETCD_DATA_DIR로 이중 보장
     mkdir -p /etc/milvus/configs
-    cat > /etc/milvus/configs/milvus.yaml << 'MILVUS_YAML'
+    cat > /etc/milvus/configs/milvus.yaml << MILVUS_YAML
+mq:
+  type: natsmq
+
+natsmq:
+  server:
+    port: 4222
+    storeDir: ${MILVUS_DATA}/nats
+    maxFileStore: 17179869184
+    maxPayload: 8388608
+    maxPending: 67108864
+    initializeTimeout: 4000
+    monitor:
+      trace: false
+      debug: false
+      logTime: true
+      logFile: ${MILVUS_DATA}/nats.log
+      logSizeLimit: 536870912
+    retention:
+      maxAge: 4320
+
+etcd:
+  endpoints: localhost:2379
+  use:
+    embed: true
+  data:
+    dir: ${MILVUS_DATA}/etcd
+  config:
+    path: /etc/milvus/configs/embedEtcd.yaml
+
+localStorage:
+  path: ${MILVUS_DATA}/local
+
+common:
+  storageType: local
+
 rootCoord:
   port: 53100
 dataCoord:
   port: 13333
 queryCoord:
   port: 19531
+queryNode:
+  port: 21123
+indexNode:
+  port: 21121
+dataNode:
+  port: 21124
 proxy:
   port: 19530
+  internalPort: 19529
 MILVUS_YAML
 
-    echo "[milvus] config 확인: $(ls /etc/milvus/configs/ 2>/dev/null)"
-    # env var 중복 설정 (Viper: ROOTCOORD_PORT → rootcoord.port)
+    echo "[milvus] config 작성 완료: $(ls /etc/milvus/configs/)"
+    # ETCD_DATA_DIR: DEB yaml의 etcd.data.data.dir 키 버그 우회 (코드는 etcd.data.dir 읽음)
     ETCD_USE_EMBED=true \
     ETCD_DATA_DIR="${MILVUS_DATA}/etcd" \
     COMMON_STORAGETYPE=local \
-    ROOTCOORD_PORT=53100 \
-    DATACOORD_PORT=13333 \
-    QUERYCOORD_PORT=19531 \
     milvus run standalone >"${MILVUS_DATA}/milvus.log" 2>&1 &
     MILVUS_PID=$!
     echo "[milvus] 서버 시작 (PID=$MILVUS_PID, log=${MILVUS_DATA}/milvus.log), 준비 대기 중..."
