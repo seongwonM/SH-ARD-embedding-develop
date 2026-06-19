@@ -113,13 +113,13 @@ class QdrantStore(VectorStore):
 
     def finalize_index(self, name: str, vector_mode: str = "dense") -> None:
         import time
-        if vector_mode in ("dense", "colbert"):
+        if vector_mode == "dense":
             from qdrant_client.models import HnswConfigDiff
             self._client.update_collection(
                 collection_name=name,
                 hnsw_config=HnswConfigDiff(m=16, ef_construct=100),
             )
-            print(f"  HNSW 빌드 시작: m=16, ef_construct=100 ({vector_mode}) — 완료 대기 중...", flush=True)
+            print(f"  HNSW 빌드 시작: m=16, ef_construct=100 — 완료 대기 중...", flush=True)
             t0 = time.time()
             while True:
                 info = self._client.get_collection(name)
@@ -129,6 +129,19 @@ class QdrantStore(VectorStore):
                 print(f"  HNSW 빌드 중... ({elapsed}s, status={info.status})", flush=True)
                 time.sleep(10)
             print(f"  HNSW 빌드 완료 ({round(time.time()-t0)}s)", flush=True)
+        elif vector_mode == "colbert":
+            # colbert multivector MaxSim에 HNSW 활성화 시 수 시간 빌드 → m=0 유지 (exact search)
+            # exact search가 벤치마크 recall 측정도 더 정확함
+            print(f"  colbert: HNSW 비활성 (exact brute-force) — GREEN 대기...", flush=True)
+            t0 = time.time()
+            while True:
+                info = self._client.get_collection(name)
+                if str(info.status).lower() in ("green", "collectionstatus.green"):
+                    break
+                elapsed = round(time.time() - t0)
+                print(f"  컬렉션 준비 중... ({elapsed}s, status={info.status})", flush=True)
+                time.sleep(10)
+            print(f"  colbert 컬렉션 준비 완료 ({round(time.time()-t0)}s)", flush=True)
         else:
             print(f"  인덱스 완료 (sparse — native inverted index)", flush=True)
 
