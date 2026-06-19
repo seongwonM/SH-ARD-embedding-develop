@@ -112,13 +112,23 @@ class QdrantStore(VectorStore):
     # ── 인덱스 마무리 ─────────────────────────────────────────────────────────
 
     def finalize_index(self, name: str, vector_mode: str = "dense") -> None:
+        import time
         if vector_mode in ("dense", "colbert"):
             from qdrant_client.models import HnswConfigDiff
             self._client.update_collection(
                 collection_name=name,
                 hnsw_config=HnswConfigDiff(m=16, ef_construct=100),
             )
-            print(f"  HNSW 활성화: m=16, ef_construct=100 ({vector_mode})", flush=True)
+            print(f"  HNSW 빌드 시작: m=16, ef_construct=100 ({vector_mode}) — 완료 대기 중...", flush=True)
+            t0 = time.time()
+            while True:
+                info = self._client.get_collection(name)
+                if str(info.status).lower() in ("green", "collectionstatus.green"):
+                    break
+                elapsed = round(time.time() - t0)
+                print(f"  HNSW 빌드 중... ({elapsed}s, status={info.status})", flush=True)
+                time.sleep(10)
+            print(f"  HNSW 빌드 완료 ({round(time.time()-t0)}s)", flush=True)
         else:
             print(f"  인덱스 완료 (sparse — native inverted index)", flush=True)
 
@@ -131,9 +141,13 @@ class QdrantStore(VectorStore):
         top_k:       int,
         vector_mode: str = "dense",
     ) -> list[list[tuple[str, float]]]:
+        import time
         CHUNK = 16 if vector_mode == "colbert" else 256
         n = len(vectors)
         all_results: list[list[tuple[str, float]]] = []
+        n_batches = (n + CHUNK - 1) // CHUNK
+        log_every = max(1, n_batches // 10)
+        t_search_start = time.time()
 
         for start in range(0, n, CHUNK):
             end = min(start + CHUNK, n)
@@ -194,6 +208,12 @@ class QdrantStore(VectorStore):
                 )
                 for result in batch:
                     all_results.append([(r.payload["doc_id"], r.score) for r in result.points])
+
+            batch_idx = start // CHUNK
+            if (batch_idx + 1) % log_every == 0 or end == n:
+                elapsed = time.time() - t_search_start
+                qps = end / elapsed if elapsed > 0 else 0
+                print(f"  검색 진행: {end:,}/{n:,}  ({elapsed:.0f}s, {qps:.1f} q/s)", flush=True)
 
         return all_results
 
