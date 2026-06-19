@@ -34,43 +34,29 @@ if [ "$VECTOR_DB" = "milvus" ]; then
     # - 실제 gRPC 리슨 포트 키: {component}.grpc.serverPort (단순 .port 아님)
     # - DEB 기본값은 DefaultServerPort=19530 으로 전체 컴포넌트가 동일 → 충돌
     # - /etc/milvus/configs/milvus.yaml 이 DEB 패키지 기본 config 경로
+    # GrpcServerConfig.Init(domain, base) 실제 키: domain+".port" (grpc.serverPort 아님)
+    # 기본값: DefaultServerPort=19530 → coord 전체가 동일 → 충돌
+    # node(queryNode/dataNode/indexNode)는 standalone에서 GetAvailablePort()로 동적 할당
     mkdir -p /etc/milvus/configs
     cat > /etc/milvus/configs/milvus.yaml << 'MILVUS_YAML'
 rootCoord:
-  grpc:
-    serverPort: 53100
+  port: 53100
 dataCoord:
-  grpc:
-    serverPort: 13333
+  port: 13333
 queryCoord:
-  grpc:
-    serverPort: 19531
-queryNode:
-  grpc:
-    serverPort: 21123
-dataNode:
-  grpc:
-    serverPort: 21124
-indexNode:
-  grpc:
-    serverPort: 21121
+  port: 19531
 proxy:
   port: 19530
-  grpc:
-    serverPort: 19530
 MILVUS_YAML
 
     echo "[milvus] config 확인: $(ls /etc/milvus/configs/ 2>/dev/null)"
-    # env var도 중복 설정 (yaml이 안 읽힐 경우 대비; Viper: FOO_BAR_BAZ → foo.bar.baz)
+    # env var 중복 설정 (Viper: ROOTCOORD_PORT → rootcoord.port)
     ETCD_USE_EMBED=true \
     ETCD_DATA_DIR="${MILVUS_DATA}/etcd" \
     COMMON_STORAGETYPE=local \
-    ROOTCOORD_GRPC_SERVERPORT=53100 \
-    DATACOORD_GRPC_SERVERPORT=13333 \
-    QUERYCOORD_GRPC_SERVERPORT=19531 \
-    QUERYNODE_GRPC_SERVERPORT=21123 \
-    DATANODE_GRPC_SERVERPORT=21124 \
-    INDEXNODE_GRPC_SERVERPORT=21121 \
+    ROOTCOORD_PORT=53100 \
+    DATACOORD_PORT=13333 \
+    QUERYCOORD_PORT=19531 \
     milvus run standalone >"${MILVUS_DATA}/milvus.log" 2>&1 &
     MILVUS_PID=$!
     echo "[milvus] 서버 시작 (PID=$MILVUS_PID, log=${MILVUS_DATA}/milvus.log), 준비 대기 중..."
