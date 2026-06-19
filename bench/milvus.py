@@ -1,8 +1,8 @@
 """Milvus VectorStore 구현 (dense / sparse, colbert 미지원).
 
-MilvusClient URI 형식:
-  Standalone : "http://localhost:19530"
-  Zilliz Cloud: "https://xxx.api.gcp-us-west1.zillizcloud.com" (token 별도)
+Milvus Standalone 설치: DEB 패키지 (embedded etcd + local storage)
+  시작: ETCD_USE_EMBED=true COMMON_STORAGETYPE=local milvus run standalone
+  URI : "http://localhost:19530"
 """
 from __future__ import annotations
 
