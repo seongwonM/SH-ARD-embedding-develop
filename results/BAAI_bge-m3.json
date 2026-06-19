@@ -1,0 +1,24 @@
+[
+  {
+    "model": "BAAI/bge-m3",
+    "vector_mode": "dense",
+    "datasets": [
+      "data"
+    ],
+    "batch_size": 16,
+    "model_dtype": "auto",
+    "model_load_sec": 13.91,
+    "index_build_sec": 265.89,
+    "index_docs_per_sec": 258.8,
+    "query_encode_sec": 7.8,
+    "query_encode_qps": 1668.6,
+    "search_sec": 92.65,
+    "search_qps": 140.5,
+    "ndcg_at_10": 0.0774,
+    "mrr_at_10": 0.077,
+    "recall_at_1": 0.0757,
+    "recall_at_5": 0.0785,
+    "recall_at_10": 0.0787,
+    "map_at_10": 0.077
+  }
+]
