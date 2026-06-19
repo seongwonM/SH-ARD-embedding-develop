@@ -89,10 +89,11 @@ proxy:
 MILVUS_YAML
 
     echo "[milvus] config 작성 완료: $(ls /etc/milvus/configs/)"
+    # MILVUSCONF: initConfPath()가 CWD+/configs를 찾는데 /app/configs 없음 → yaml 미로드
+    #   → MILVUSCONF로 명시해야 /etc/milvus/configs/milvus.yaml을 읽음
     # ETCD_DATA_DIR: DEB yaml의 etcd.data.data.dir 키 버그 우회 (코드는 etcd.data.dir 읽음)
-    ETCD_USE_EMBED=true \
+    MILVUSCONF=/etc/milvus/configs \
     ETCD_DATA_DIR="${MILVUS_DATA}/etcd" \
-    COMMON_STORAGETYPE=local \
     milvus run standalone >"${MILVUS_DATA}/milvus.log" 2>&1 &
     MILVUS_PID=$!
     echo "[milvus] 서버 시작 (PID=$MILVUS_PID, log=${MILVUS_DATA}/milvus.log), 준비 대기 중..."
