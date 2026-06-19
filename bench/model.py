@@ -53,7 +53,7 @@ class EmbeddingModel:
         else:
             model_kwargs["torch_dtype"] = getattr(torch, dtype_str)
 
-        if model_id in _FLASH_ATTN_MODELS:
+        if model_id in _FLASH_ATTN_MODELS and torch.cuda.is_available():
             model_kwargs["attn_implementation"] = "flash_attention_2"
 
         self._model = SentenceTransformer(model_id, model_kwargs=model_kwargs)
