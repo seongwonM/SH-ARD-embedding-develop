@@ -34,7 +34,7 @@ class QdrantStore(VectorStore):
 
     def __init__(self, url: str) -> None:
         from qdrant_client import QdrantClient
-        self._client = QdrantClient(url=url, timeout=300)
+        self._client = QdrantClient(url=url, timeout=300, check_compatibility=False)
         print(f"[Qdrant] 서버: {url}", flush=True)
 
     def has_collection(self, name: str) -> bool:
