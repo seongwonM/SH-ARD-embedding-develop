@@ -16,7 +16,7 @@ COPY deploy/requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt \
  && pip install --no-cache-dir "flash-attn==2.7.4.post1" --no-build-isolation \
  && apt-get update && apt-get install -y --no-install-recommends git curl \
- && curl -L https://github.com/qdrant/qdrant/releases/download/v1.13.6/qdrant-x86_64-unknown-linux-musl.tar.gz \
+ && curl -L https://github.com/qdrant/qdrant/releases/download/v1.18.0/qdrant-x86_64-unknown-linux-musl.tar.gz \
     | tar xz -C /usr/local/bin \
  && rm -rf /var/lib/apt/lists/*
 

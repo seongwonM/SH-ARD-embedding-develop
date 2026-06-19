@@ -36,7 +36,7 @@ class QdrantStore(VectorStore):
 
     def __init__(self, url: str) -> None:
         from qdrant_client import QdrantClient
-        self._client = QdrantClient(url=url, timeout=300)
+        self._client = QdrantClient(url=url, timeout=300, check_compatibility=False)
         print(f"[Qdrant] 서버: {url}", flush=True)
 
     # ── 컬렉션 존재 / 크기 ────────────────────────────────────────────────────
@@ -112,8 +112,15 @@ class QdrantStore(VectorStore):
     # ── 인덱스 마무리 ─────────────────────────────────────────────────────────
 
     def finalize_index(self, name: str, vector_mode: str = "dense") -> None:
-        labels = {"dense": "flat cosine", "sparse": "sparse (native)", "colbert": "MaxSim (native)"}
-        print(f"  인덱스 완료 ({labels.get(vector_mode, vector_mode)})", flush=True)
+        if vector_mode in ("dense", "colbert"):
+            from qdrant_client.models import HnswConfigDiff
+            self._client.update_collection(
+                collection_name=name,
+                hnsw_config=HnswConfigDiff(m=16, ef_construct=100),
+            )
+            print(f"  HNSW 활성화: m=16, ef_construct=100 ({vector_mode})", flush=True)
+        else:
+            print(f"  인덱스 완료 (sparse — native inverted index)", flush=True)
 
     # ── 검색 ─────────────────────────────────────────────────────────────────
 
