@@ -26,23 +26,21 @@ REPORTS_PATH="/workspace/reports/${MODEL_SAFE:-all}${MODE_SUFFIX:-}${DB_SUFFIX}"
 if [ "$VECTOR_DB" = "milvus" ]; then
     # Milvus Standalone (DEB 패키지 바이너리) — embedded etcd + local storage
     MILVUS_DATA="/workspace/milvus_data/${MODEL_SAFE:-default}${MODE_SUFFIX:-}"
+    # 이전 크래시로 인한 stale etcd 데이터(BoltDB 락/WAL 불일치) 방지: 항상 fresh start
+    rm -rf "${MILVUS_DATA}"
     mkdir -p "${MILVUS_DATA}/etcd"
 
-    # 컴포넌트별 고유 포트 지정 (DEB 기본 config가 전부 19530으로 설정돼 충돌 발생)
-    mkdir -p /etc/milvus
-    cat > /etc/milvus/milvus.yaml << 'MILVUS_YAML'
+    # 컴포넌트별 고유 포트 지정 (DEB 기본값이 전부 19530 → 충돌)
+    # DEB 패키지는 /etc/milvus/configs/milvus.yaml 을 읽음 (/etc/milvus/ 아님)
+    # v2.4.1: indexCoord는 dataCoord에 통합되어 삭제됨
+    mkdir -p /etc/milvus/configs
+    cat > /etc/milvus/configs/milvus.yaml << 'MILVUS_YAML'
 rootCoord:
-  address: localhost
   port: 53100
 dataCoord:
-  address: localhost
   port: 13333
 queryCoord:
-  address: localhost
   port: 19531
-indexCoord:
-  address: localhost
-  port: 31000
 proxy:
   port: 19530
 MILVUS_YAML
@@ -53,7 +51,22 @@ MILVUS_YAML
     milvus run standalone >"${MILVUS_DATA}/milvus.log" 2>&1 &
     MILVUS_PID=$!
     echo "[milvus] 서버 시작 (PID=$MILVUS_PID, log=${MILVUS_DATA}/milvus.log), 준비 대기 중..."
-    until curl -sf http://localhost:9091/healthz >/dev/null 2>&1; do sleep 2; done
+
+    # 프로세스 생존 확인하며 헬스체크 (크래시 시 로그 출력)
+    _milvus_ok=0
+    for _i in $(seq 1 90); do
+        if ! kill -0 "$MILVUS_PID" 2>/dev/null; then
+            echo "[milvus] 프로세스 비정상 종료! 마지막 로그 (50줄):"
+            tail -50 "${MILVUS_DATA}/milvus.log" || true
+            sleep infinity
+        fi
+        if curl -sf http://localhost:9091/healthz >/dev/null 2>&1; then
+            _milvus_ok=1
+            break
+        fi
+        sleep 2
+    done
+    [ "$_milvus_ok" -eq 1 ] || { echo "[milvus] 헬스체크 타임아웃!"; tail -50 "${MILVUS_DATA}/milvus.log" || true; sleep infinity; }
     echo "[milvus] 서버 준비 완료"
     MILVUS_URI="http://localhost:19530"
 else
