@@ -14,7 +14,7 @@ import math
 import numpy as np
 
 _ENCODE_CHUNK = 2_000   # 인코딩 단위 (메모리 제어)
-_UPLOAD_BATCH = 256     # Qdrant upload_points 내부 배치 크기
+_UPLOAD_BATCH = 64      # Qdrant upload_points 배치 크기 (colbert ~128MB/req 기준)
 
 
 # ── 인터페이스 ────────────────────────────────────────────────────────────────
@@ -99,13 +99,11 @@ class QdrantStore(VectorStore):
     # ── 업로드 ────────────────────────────────────────────────────────────────
 
     def upload_stream(self, name: str, points, vector_mode: str = "dense") -> None:
-        # colbert: 토큰당 1024dim 멀티벡터라 doc당 ~2MB(JSON) → 배치 줄여서 요청 크기 제한
-        batch = 16 if vector_mode == "colbert" else _UPLOAD_BATCH
-        print(f"  [upload] upload_points 시작... (batch={batch})", flush=True)
+        print("  [upload] upload_points 시작...", flush=True)
         self._client.upload_points(
             collection_name=name,
             points=points,
-            batch_size=batch,
+            batch_size=_UPLOAD_BATCH,
             parallel=1,
             max_retries=3,
         )
