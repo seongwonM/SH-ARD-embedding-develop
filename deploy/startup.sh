@@ -30,33 +30,59 @@ if [ "$VECTOR_DB" = "milvus" ]; then
     rm -rf "${MILVUS_DATA}"
     mkdir -p "${MILVUS_DATA}/etcd"
 
-    # 컴포넌트별 고유 포트 지정 (DEB 기본값이 전부 19530 → 충돌)
-    # DEB 패키지는 /etc/milvus/configs/milvus.yaml 을 읽음 (/etc/milvus/ 아님)
-    # v2.4.1: indexCoord는 dataCoord에 통합되어 삭제됨
+    # Milvus 모든 컴포넌트 gRPC 포트 설정
+    # - 실제 gRPC 리슨 포트 키: {component}.grpc.serverPort (단순 .port 아님)
+    # - DEB 기본값은 DefaultServerPort=19530 으로 전체 컴포넌트가 동일 → 충돌
+    # - /etc/milvus/configs/milvus.yaml 이 DEB 패키지 기본 config 경로
     mkdir -p /etc/milvus/configs
     cat > /etc/milvus/configs/milvus.yaml << 'MILVUS_YAML'
 rootCoord:
-  port: 53100
+  grpc:
+    serverPort: 53100
 dataCoord:
-  port: 13333
+  grpc:
+    serverPort: 13333
 queryCoord:
-  port: 19531
+  grpc:
+    serverPort: 19531
+queryNode:
+  grpc:
+    serverPort: 21123
+dataNode:
+  grpc:
+    serverPort: 21124
+indexNode:
+  grpc:
+    serverPort: 21121
 proxy:
   port: 19530
+  grpc:
+    serverPort: 19530
 MILVUS_YAML
 
+    echo "[milvus] config 확인: $(ls /etc/milvus/configs/ 2>/dev/null)"
+    # env var도 중복 설정 (yaml이 안 읽힐 경우 대비; Viper: FOO_BAR_BAZ → foo.bar.baz)
     ETCD_USE_EMBED=true \
     ETCD_DATA_DIR="${MILVUS_DATA}/etcd" \
     COMMON_STORAGETYPE=local \
+    ROOTCOORD_GRPC_SERVERPORT=53100 \
+    DATACOORD_GRPC_SERVERPORT=13333 \
+    QUERYCOORD_GRPC_SERVERPORT=19531 \
+    QUERYNODE_GRPC_SERVERPORT=21123 \
+    DATANODE_GRPC_SERVERPORT=21124 \
+    INDEXNODE_GRPC_SERVERPORT=21121 \
     milvus run standalone >"${MILVUS_DATA}/milvus.log" 2>&1 &
     MILVUS_PID=$!
     echo "[milvus] 서버 시작 (PID=$MILVUS_PID, log=${MILVUS_DATA}/milvus.log), 준비 대기 중..."
 
-    # 프로세스 생존 확인하며 헬스체크 (크래시 시 로그 출력)
+    # 프로세스 생존 확인하며 헬스체크 (크래시 시 로그 앞부분 + 뒷부분 출력)
     _milvus_ok=0
     for _i in $(seq 1 90); do
         if ! kill -0 "$MILVUS_PID" 2>/dev/null; then
-            echo "[milvus] 프로세스 비정상 종료! 마지막 로그 (50줄):"
+            echo "[milvus] 프로세스 비정상 종료!"
+            echo "=== milvus.log HEAD (100줄) ==="
+            head -100 "${MILVUS_DATA}/milvus.log" || true
+            echo "=== milvus.log TAIL (50줄) ==="
             tail -50 "${MILVUS_DATA}/milvus.log" || true
             sleep infinity
         fi
@@ -66,7 +92,14 @@ MILVUS_YAML
         fi
         sleep 2
     done
-    [ "$_milvus_ok" -eq 1 ] || { echo "[milvus] 헬스체크 타임아웃!"; tail -50 "${MILVUS_DATA}/milvus.log" || true; sleep infinity; }
+    if [ "$_milvus_ok" -eq 0 ]; then
+        echo "[milvus] 헬스체크 타임아웃!"
+        echo "=== milvus.log HEAD (100줄) ==="
+        head -100 "${MILVUS_DATA}/milvus.log" || true
+        echo "=== milvus.log TAIL (50줄) ==="
+        tail -50 "${MILVUS_DATA}/milvus.log" || true
+        sleep infinity
+    fi
     echo "[milvus] 서버 준비 완료"
     MILVUS_URI="http://localhost:19530"
 else
