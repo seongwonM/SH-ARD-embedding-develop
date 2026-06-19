@@ -18,9 +18,7 @@ else
 fi
 
 MODEL_SAFE=$(echo "${MODEL_ID:-}" | tr '/' '_')
-VECTOR_MODE=${VECTOR_MODE:-dense}
-MODE_SUFFIX=$([ "$VECTOR_MODE" != "dense" ] && echo "_${VECTOR_MODE}" || echo "")
-REPORTS_PATH="/workspace/reports/${MODEL_SAFE:-all}${MODE_SUFFIX}"
+REPORTS_PATH="/workspace/reports/${MODEL_SAFE:-all}"
 
 # Qdrant 서버 시작
 mkdir -p /workspace/qdrant_storage
@@ -37,7 +35,6 @@ MODEL_ARG=""
 
 python -m bench.runner \
     ${MODEL_ARG} \
-    --vector-mode "${VECTOR_MODE}" \
     --model-dtype auto \
     --batch-size "${BATCH_SIZE:-16}" \
     --out "${REPORTS_PATH}" \
@@ -54,7 +51,7 @@ if [ -n "${GH_TOKEN:-}" ]; then
         git config user.email 'pod@runpod.io'
         git config user.name 'RunPod'
         mkdir -p results
-        cp "$RESULT_FILE" "results/${MODEL_SAFE:-all}${MODE_SUFFIX}.json"
+        cp "$RESULT_FILE" "results/${MODEL_SAFE:-all}.json"
         git add results/
         if git diff --cached --quiet; then
             echo "[git] 변경 없음 (이미 push됨)"

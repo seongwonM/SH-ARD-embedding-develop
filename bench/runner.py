@@ -98,12 +98,11 @@ def run_model(
     task_names:       list[str],
     batch_size:       int,
     model_dtype:      str,
-    vector_mode:      str = "dense",
 ) -> dict:
-    collection = _safe_name(model_id) + (f"_{vector_mode}" if vector_mode != "dense" else "")
+    collection = _safe_name(model_id)
 
     print(f"\n{'='*64}")
-    print(f"  모델: {model_id}  dtype={model_dtype}  vector_mode={vector_mode}")
+    print(f"  모델: {model_id}  dtype={model_dtype}")
     print(f"  컬렉션: {collection}")
     print(f"{'='*64}")
 
@@ -153,7 +152,7 @@ def run_model(
     # 검색
     print(f"  검색 (top-100)...", flush=True)
     t0 = time.time()
-    raw_results = store.search_batch(collection, q_embs, top_k=100, vector_mode=vector_mode)
+    raw_results = store.search_batch(collection, q_embs, top_k=100)
     search_sec = round(time.time() - t0, 2)
     search_qps = round(len(q_ids) / search_sec, 1)
     del q_embs
@@ -176,9 +175,8 @@ def run_model(
     )
 
     return {
-        "model":        model_id,
-        "vector_mode":  vector_mode,
-        "datasets":     task_names,
+        "model":    model_id,
+        "datasets": task_names,
         "batch_size":   batch_size,
         "model_dtype":  model_dtype,
         # ── 성능 지표 ──────────────────────────────
@@ -217,24 +215,18 @@ def main() -> None:
     ap.add_argument("--qdrant-url", default="http://localhost:6333",
                     help="Qdrant 서버 URL")
 
-    # 벡터 모드
-    ap.add_argument("--vector-mode", default=os.getenv("VECTOR_MODE", "dense"),
-                    choices=["dense", "sparse", "colbert"],
-                    help="벡터 인덱싱/검색 모드")
-
     # 출력
     ap.add_argument("--out", default="reports", help="결과 저장 디렉터리")
 
     args = ap.parse_args()
 
     os.makedirs(args.out, exist_ok=True)
-    model_ids   = [args.model] if args.model else (args.models or _DEFAULT_MODELS)
-    vector_mode = args.vector_mode or "dense"
+    model_ids = [args.model] if args.model else (args.models or _DEFAULT_MODELS)
 
     store = build_store(args)
 
     print(f"[데이터] {args.data_root}")
-    print(f"[모델]   {model_ids}  vector_mode={vector_mode}")
+    print(f"[모델]   {model_ids}")
 
     t0 = time.time()
     combined_docs, combined_queries, combined_qrels = load_from_dir(args.data_root)
@@ -246,10 +238,9 @@ def main() -> None:
     t0_total = time.time()
 
     for model_id in model_ids:
-        mode_suffix = f"_{vector_mode}" if vector_mode != "dense" else ""
-        ckpt = os.path.join(args.out, model_id.replace("/", "_") + mode_suffix + ".json")
+        ckpt = os.path.join(args.out, model_id.replace("/", "_") + ".json")
         if os.path.exists(ckpt):
-            print(f"\n[스킵] {model_id} ({vector_mode}) — 결과 존재: {ckpt}", flush=True)
+            print(f"\n[스킵] {model_id} — 결과 존재: {ckpt}", flush=True)
             with open(ckpt, encoding="utf-8") as f:
                 all_results.append(json.load(f))
             continue
@@ -258,7 +249,6 @@ def main() -> None:
             model_id, store,
             combined_docs, combined_queries, combined_qrels, task_names,
             args.batch_size, args.model_dtype,
-            vector_mode=vector_mode,
         )
         all_results.append(result)
         with open(ckpt, "w", encoding="utf-8") as f:
