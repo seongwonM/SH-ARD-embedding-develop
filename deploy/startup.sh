@@ -27,6 +27,26 @@ if [ "$VECTOR_DB" = "milvus" ]; then
     # Milvus Standalone (DEB 패키지 바이너리) — embedded etcd + local storage
     MILVUS_DATA="/workspace/milvus_data/${MODEL_SAFE:-default}${MODE_SUFFIX:-}"
     mkdir -p "${MILVUS_DATA}/etcd"
+
+    # 컴포넌트별 고유 포트 지정 (DEB 기본 config가 전부 19530으로 설정돼 충돌 발생)
+    mkdir -p /etc/milvus
+    cat > /etc/milvus/milvus.yaml << 'MILVUS_YAML'
+rootCoord:
+  address: localhost
+  port: 53100
+dataCoord:
+  address: localhost
+  port: 13333
+queryCoord:
+  address: localhost
+  port: 19531
+indexCoord:
+  address: localhost
+  port: 31000
+proxy:
+  port: 19530
+MILVUS_YAML
+
     ETCD_USE_EMBED=true \
     ETCD_DATA_DIR="${MILVUS_DATA}/etcd" \
     COMMON_STORAGETYPE=local \
