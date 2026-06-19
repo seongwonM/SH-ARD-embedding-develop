@@ -8,6 +8,7 @@ ENV PYTHONUNBUFFERED=1 \
     DATA_ROOT=/workspace/datasets \
     MODEL_ID="" \
     VECTOR_MODE="" \
+    VECTOR_DB="qdrant" \
     BATCH_SIZE=16
 
 WORKDIR /app

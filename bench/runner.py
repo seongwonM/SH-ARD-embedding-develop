@@ -28,7 +28,6 @@ from pathlib import Path
 from bench.data_loader import load_from_dir
 from bench.evaluator import evaluate
 from bench.model import build_model
-from bench.vectordb import QdrantStore, index_docs
 
 _DEFAULT_MODELS = [
     "BAAI/bge-m3",
@@ -58,12 +57,16 @@ def _json_default(obj):
 # VectorDB 팩토리 (교체 시 여기만 수정)
 # ──────────────────────────────────────────────────────────────────────────────
 
-def build_store(args) -> QdrantStore:
-    """
-    VectorDB 인스턴스 생성.
-    다른 VectorDB로 교체하려면 이 함수에서 해당 클래스를 반환하도록 수정.
-    """
-    return QdrantStore(url=args.qdrant_url)
+def build_store(args):
+    """VectorDB 인스턴스와 해당 index_docs 함수를 반환."""
+    vectordb = getattr(args, "vectordb", "qdrant")
+    if vectordb == "milvus":
+        from bench.milvus import MilvusStore, index_docs as _fn
+        store = MilvusStore(uri=args.milvus_uri)
+    else:
+        from bench.vectordb import QdrantStore, index_docs as _fn
+        store = QdrantStore(url=args.qdrant_url)
+    return store, _fn
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -73,6 +76,7 @@ def build_store(args) -> QdrantStore:
 def run_model(
     model_id:         str,
     store,
+    index_docs,
     combined_docs:    dict,
     combined_queries: dict,
     combined_qrels:   dict,
@@ -84,8 +88,9 @@ def run_model(
     mode_suffix = f"_{vector_mode}"
     collection = _safe_name(model_id) + mode_suffix
 
+    vectordb_name = type(store).__name__.replace("Store", "")
     print(f"\n{'='*64}")
-    print(f"  모델: {model_id}  dtype={model_dtype}  vector_mode={vector_mode}")
+    print(f"  모델: {model_id}  dtype={model_dtype}  vector_mode={vector_mode}  vectordb={vectordb_name}")
     print(f"  컬렉션: {collection}")
     print(f"{'='*64}")
 
@@ -200,8 +205,13 @@ def main() -> None:
     # --data-root 에 파일(bench.parquet) 또는 디렉터리를 직접 지정
 
     # VectorDB
+    ap.add_argument("--vectordb", default=os.getenv("VECTOR_DB", "qdrant"),
+                    choices=["qdrant", "milvus"],
+                    help="VectorDB 선택 (default: $VECTOR_DB or 'qdrant')")
     ap.add_argument("--qdrant-url", default="http://localhost:6333",
                     help="Qdrant 서버 URL (default: http://localhost:6333)")
+    ap.add_argument("--milvus-uri", default=os.getenv("MILVUS_URI", "http://localhost:19530"),
+                    help="Milvus 서버 URI (default: $MILVUS_URI or 'http://localhost:19530')")
 
     # 출력
     ap.add_argument("--out", default="reports", help="결과 저장 디렉터리")
@@ -212,10 +222,14 @@ def main() -> None:
     model_ids   = [args.model] if args.model else (args.models or _DEFAULT_MODELS)
     vector_mode = args.vector_mode or "dense"
 
-    store = build_store(args)
+    store, index_docs = build_store(args)
+
+    if args.vectordb == "milvus" and vector_mode == "colbert":
+        print("[ERROR] Milvus는 colbert를 지원하지 않습니다. --vector-mode를 dense 또는 sparse로 변경하세요.")
+        return
 
     print(f"[데이터] {args.data_root}")
-    print(f"[모델]   {model_ids}  vector_mode={vector_mode}")
+    print(f"[모델]   {model_ids}  vector_mode={vector_mode}  vectordb={args.vectordb}")
 
     t0 = time.time()
     combined_docs, combined_queries, combined_qrels = load_from_dir(args.data_root)
@@ -236,7 +250,7 @@ def main() -> None:
 
         try:
             result = run_model(
-                model_id, store,
+                model_id, store, index_docs,
                 combined_docs, combined_queries, combined_qrels, task_names,
                 args.batch_size, args.model_dtype,
                 vector_mode=vector_mode,

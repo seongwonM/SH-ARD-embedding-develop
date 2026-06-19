@@ -21,17 +21,30 @@ MODEL_SAFE=$(echo "${MODEL_ID:-}" | tr '/' '_')
 MODE_SUFFIX=${VECTOR_MODE:+_${VECTOR_MODE}}
 REPORTS_PATH="/workspace/reports/${MODEL_SAFE:-all}${MODE_SUFFIX:-}"
 
-# Qdrant 서버 시작 (pod별 독립 스토리지 — RocksDB lock 충돌 방지)
-QDRANT_STORAGE="/workspace/qdrant_storage/${MODEL_SAFE:-default}${MODE_SUFFIX:-}"
-mkdir -p "$QDRANT_STORAGE"
-QDRANT__STORAGE__STORAGE_PATH="$QDRANT_STORAGE" \
-QDRANT__LOG_LEVEL=WARN \
-QDRANT__SERVICE__MAX_REQUEST_SIZE_MB=2048 \
-qdrant --disable-telemetry &
-QDRANT_PID=$!
-echo "[qdrant] 서버 시작 (PID=$QDRANT_PID), 준비 대기 중..."
-until curl -sf http://localhost:6333/healthz >/dev/null 2>&1; do sleep 1; done
-echo "[qdrant] 서버 준비 완료"
+VECTOR_DB="${VECTOR_DB:-qdrant}"
+
+if [ "$VECTOR_DB" = "milvus" ]; then
+    # Milvus Standalone 시작
+    MILVUS_HOME="/workspace/milvus_data/${MODEL_SAFE:-default}${MODE_SUFFIX:-}"
+    mkdir -p "$MILVUS_HOME"
+    MILVUS_DATA_PATH="$MILVUS_HOME" milvus run standalone &
+    MILVUS_PID=$!
+    echo "[milvus] 서버 시작 (PID=$MILVUS_PID), 준비 대기 중..."
+    until curl -sf http://localhost:9091/healthz >/dev/null 2>&1; do sleep 2; done
+    echo "[milvus] 서버 준비 완료"
+else
+    # Qdrant 서버 시작 (pod별 독립 스토리지 — RocksDB lock 충돌 방지)
+    QDRANT_STORAGE="/workspace/qdrant_storage/${MODEL_SAFE:-default}${MODE_SUFFIX:-}"
+    mkdir -p "$QDRANT_STORAGE"
+    QDRANT__STORAGE__STORAGE_PATH="$QDRANT_STORAGE" \
+    QDRANT__LOG_LEVEL=WARN \
+    QDRANT__SERVICE__MAX_REQUEST_SIZE_MB=2048 \
+    qdrant --disable-telemetry &
+    QDRANT_PID=$!
+    echo "[qdrant] 서버 시작 (PID=$QDRANT_PID), 준비 대기 중..."
+    until curl -sf http://localhost:6333/healthz >/dev/null 2>&1; do sleep 1; done
+    echo "[qdrant] 서버 준비 완료"
+fi
 
 MODEL_ARG=""
 [ -n "${MODEL_ID:-}" ] && MODEL_ARG="--model ${MODEL_ID}"
@@ -58,7 +71,9 @@ python -m bench.runner \
     --model-dtype auto \
     --batch-size "${BATCH_SIZE:-16}" \
     --out "${REPORTS_PATH}" \
+    --vectordb "${VECTOR_DB:-qdrant}" \
     --qdrant-url http://localhost:6333 \
+    --milvus-uri http://localhost:19530 \
     --data-root "${DATA_DIR}"
 
 if [ -n "${GH_TOKEN:-}" ]; then
