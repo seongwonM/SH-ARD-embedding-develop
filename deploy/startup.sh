@@ -30,9 +30,9 @@ if [ "$VECTOR_DB" = "milvus" ]; then
     ETCD_USE_EMBED=true \
     ETCD_DATA_DIR="${MILVUS_DATA}/etcd" \
     COMMON_STORAGETYPE=local \
-    milvus run standalone &
+    milvus run standalone >"${MILVUS_DATA}/milvus.log" 2>&1 &
     MILVUS_PID=$!
-    echo "[milvus] 서버 시작 (PID=$MILVUS_PID), 준비 대기 중..."
+    echo "[milvus] 서버 시작 (PID=$MILVUS_PID, log=${MILVUS_DATA}/milvus.log), 준비 대기 중..."
     until curl -sf http://localhost:9091/healthz >/dev/null 2>&1; do sleep 2; done
     echo "[milvus] 서버 준비 완료"
     MILVUS_URI="http://localhost:19530"
