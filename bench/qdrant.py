@@ -131,7 +131,7 @@ class QdrantStore(VectorStore):
         top_k:       int,
         vector_mode: str = "dense",
     ) -> list[list[tuple[str, float]]]:
-        CHUNK = 256
+        CHUNK = 16 if vector_mode == "colbert" else 256
         n = len(vectors)
         all_results: list[list[tuple[str, float]]] = []
 
