@@ -1,6 +1,7 @@
 """Milvus VectorStore 구현 (dense / sparse, colbert 미지원).
 
 Milvus Standalone 설치: DEB 패키지 (embedded etcd + local storage)
+  설치: milvus_2.4.1-1_amd64.deb (v2.5.x는 DEB 미제공)
   시작: ETCD_USE_EMBED=true COMMON_STORAGETYPE=local milvus run standalone
   URI : "http://localhost:19530"
 """
