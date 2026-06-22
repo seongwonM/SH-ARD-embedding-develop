@@ -20,7 +20,7 @@ RUN pip install --no-cache-dir -r requirements.txt \
  && apt-get install -y --no-install-recommends git curl \
  && curl -L https://github.com/qdrant/qdrant/releases/download/v1.18.0/qdrant-x86_64-unknown-linux-musl.tar.gz \
     | tar xz -C /usr/local/bin \
- && curl -L https://github.com/milvus-io/milvus/releases/download/v2.4.1/milvus_2.4.1-1_amd64.deb \
+ && curl -L https://github.com/milvus-io/milvus/releases/download/v2.6.9/milvus_2.6.9-1_amd64.deb \
     -o /tmp/milvus.deb \
  && apt-get install -y /tmp/milvus.deb \
  && rm /tmp/milvus.deb \

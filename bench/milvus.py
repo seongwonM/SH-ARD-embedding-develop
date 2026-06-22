@@ -1,9 +1,13 @@
-"""Milvus VectorStore 구현 (dense / sparse, colbert 미지원).
+"""Milvus VectorStore 구현 (dense / sparse / colbert).
 
 Milvus Standalone 설치: DEB 패키지 (embedded etcd + local storage)
-  설치: milvus_2.4.1-1_amd64.deb (v2.5.x는 DEB 미제공)
-  시작: ETCD_USE_EMBED=true COMMON_STORAGETYPE=local milvus run standalone
+  설치: milvus_2.6.9-1_amd64.deb (v2.6.4+: Array of Structs + MAX_SIM 지원)
+  시작: MILVUSCONF=/etc/milvus/configs milvus run standalone
   URI : "http://localhost:19530"
+
+colbert: Array of Structs + MAX_SIM_COSINE (pymilvus >= 2.6.0 필요)
+  - 문서당 토큰 임베딩 리스트를 colbert_embs[emb] 필드에 저장
+  - 검색: EmbeddingList로 쿼리 토큰 임베딩 전달 → 서버 사이드 MaxSim
 """
 from __future__ import annotations
 
@@ -49,6 +53,22 @@ class MilvusStore:
                 index_type="SPARSE_INVERTED_INDEX",
                 metric_type="IP",
             )
+        elif vector_mode == "colbert":
+            # Array of Structs: 문서당 토큰 임베딩 리스트 → MAX_SIM_COSINE
+            struct_schema = self._client.create_struct_field_schema()
+            struct_schema.add_field("emb", DataType.FLOAT_VECTOR, dim=dim)
+            schema.add_field(
+                "colbert_embs",
+                DataType.ARRAY,
+                element_type=DataType.STRUCT,
+                struct_schema=struct_schema,
+                max_capacity=512,
+            )
+            index_params.add_index(
+                field_name="colbert_embs[emb]",
+                index_type="AUTOINDEX",
+                metric_type="MAX_SIM_COSINE",
+            )
         else:  # dense
             schema.add_field("vector", DataType.FLOAT_VECTOR, dim=dim)
             index_params.add_index(
@@ -66,15 +86,24 @@ class MilvusStore:
         print(f"  컬렉션 생성: {name}  mode={vector_mode}  dim={dim}", flush=True)
 
     def upload_stream(self, name: str, data_iter, vector_mode: str = "dense") -> None:
-        """data_iter: (point_id, doc_id, vec) 튜플 스트림."""
         print("  [upload] insert 시작...", flush=True)
         batch: list[dict] = []
         for pid, doc_id, vec in data_iter:
-            if vector_mode == "sparse":
-                vector = {int(k): float(v) for k, v in vec.items()}
+            if vector_mode == "colbert":
+                row = {
+                    "id": pid,
+                    "doc_id": doc_id,
+                    "colbert_embs": [{"emb": v.tolist()} for v in vec],
+                }
+            elif vector_mode == "sparse":
+                row = {
+                    "id": pid,
+                    "doc_id": doc_id,
+                    "vector": {int(k): float(v) for k, v in vec.items()},
+                }
             else:
-                vector = vec.tolist()
-            batch.append({"id": pid, "doc_id": doc_id, "vector": vector})
+                row = {"id": pid, "doc_id": doc_id, "vector": vec.tolist()}
+            batch.append(row)
             if len(batch) >= _INSERT_BATCH:
                 self._client.insert(collection_name=name, data=batch)
                 batch.clear()
@@ -93,33 +122,65 @@ class MilvusStore:
         top_k:       int,
         vector_mode: str = "dense",
     ) -> list[list[tuple[str, float]]]:
-        CHUNK = 256
+        import time
+        CHUNK = 16 if vector_mode == "colbert" else 256
         n = len(vectors)
         all_results: list[list[tuple[str, float]]] = []
-
-        metric_type   = "IP" if vector_mode == "sparse" else "COSINE"
-        search_params = {} if vector_mode == "sparse" else {"ef": 100}
+        n_batches = (n + CHUNK - 1) // CHUNK
+        log_every = max(1, n_batches // 10)
+        t0 = time.time()
 
         for start in range(0, n, CHUNK):
             end = min(start + CHUNK, n)
-            if vector_mode == "sparse":
+
+            if vector_mode == "colbert":
+                from pymilvus.client.embedding_list import EmbeddingList
+                data = []
+                for i in range(start, end):
+                    emb_list = EmbeddingList()
+                    for token_vec in vectors[i]:
+                        emb_list.add(token_vec.tolist())
+                    data.append(emb_list)
+                results = self._client.search(
+                    collection_name=name,
+                    data=data,
+                    anns_field="colbert_embs[emb]",
+                    search_params={"metric_type": "MAX_SIM_COSINE"},
+                    limit=top_k,
+                    output_fields=["doc_id"],
+                )
+            elif vector_mode == "sparse":
                 query_data = [
                     {int(k): float(v) for k, v in vectors[i].items()}
                     for i in range(start, end)
                 ]
-            else:
+                results = self._client.search(
+                    collection_name=name,
+                    data=query_data,
+                    anns_field="vector",
+                    search_params={"metric_type": "IP", "params": {}},
+                    limit=top_k,
+                    output_fields=["doc_id"],
+                )
+            else:  # dense
                 query_data = [vectors[i].tolist() for i in range(start, end)]
+                results = self._client.search(
+                    collection_name=name,
+                    data=query_data,
+                    anns_field="vector",
+                    search_params={"metric_type": "COSINE", "params": {"ef": 100}},
+                    limit=top_k,
+                    output_fields=["doc_id"],
+                )
 
-            results = self._client.search(
-                collection_name=name,
-                data=query_data,
-                anns_field="vector",
-                search_params={"metric_type": metric_type, "params": search_params},
-                limit=top_k,
-                output_fields=["doc_id"],
-            )
             for hits in results:
                 all_results.append([(h["entity"]["doc_id"], h["distance"]) for h in hits])
+
+            batch_idx = start // CHUNK
+            if (batch_idx + 1) % log_every == 0 or end == n:
+                elapsed = time.time() - t0
+                qps = end / elapsed if elapsed > 0 else 0
+                print(f"  검색 진행: {end:,}/{n:,}  ({elapsed:.0f}s, {qps:.1f} q/s)", flush=True)
 
         return all_results
 

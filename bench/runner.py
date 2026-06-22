@@ -224,10 +224,6 @@ def main() -> None:
 
     store, index_docs = build_store(args)
 
-    if args.vectordb == "milvus" and vector_mode == "colbert":
-        print("[ERROR] Milvus는 colbert를 지원하지 않습니다. --vector-mode를 dense 또는 sparse로 변경하세요.")
-        return
-
     print(f"[데이터] {args.data_root}")
     print(f"[모델]   {model_ids}  vector_mode={vector_mode}  vectordb={args.vectordb}")
 

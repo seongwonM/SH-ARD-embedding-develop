@@ -7,4 +7,4 @@ accelerate>=0.30.0
 psutil
 pandas>=2.0.0
 pyarrow>=14.0.0
-pymilvus>=2.4.0
+pymilvus>=2.6.0
