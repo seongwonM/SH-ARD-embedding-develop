@@ -30,58 +30,55 @@ if [ "$VECTOR_DB" = "milvus" ]; then
     rm -rf "${MILVUS_DATA}"
     mkdir -p "${MILVUS_DATA}/etcd" "${MILVUS_DATA}/woodpecker" "${MILVUS_DATA}/local"
 
-    # 완전한 milvus.yaml 작성:
-    # - v2.6.x: natsmq 제거됨 → woodpecker(신규 WAL) 사용
-    # - DEB 원본 yaml 덮어쓰기 → 모든 설정을 여기에 포함 (포트, MQ, etcd, storage)
-    # - etcd.data.dir 키는 yaml에도 쓰되 env var ETCD_DATA_DIR로 이중 보장
-    mkdir -p /etc/milvus/configs
-    cat > /etc/milvus/configs/milvus.yaml << MILVUS_YAML
-mq:
-  type: woodpecker
+    # DEB 기본 milvus.yaml을 베이스로 유지하고, 우리가 바꿀 값만 Python deep-merge로 패치.
+    # 통째로 덮어쓰면 DEB 기본값(minSizeFromIdleToSealed 등)이 Go 기본값 0으로 떨어져 패닉 발생.
+    python3 - "${MILVUS_DATA}" << 'PYEOF'
+import yaml, copy, sys
 
-woodpecker:
-  storage:
-    type: local
-    rootPath: ${MILVUS_DATA}/woodpecker
-  logstore:
-    segmentSyncPolicy:
-      maxIntervalForLocalStorage: 10ms
+milvus_data = sys.argv[1]
 
-etcd:
-  endpoints: localhost:2379
-  use:
-    embed: true
-  data:
-    dir: ${MILVUS_DATA}/etcd
-  config:
-    path: /etc/milvus/configs/embedEtcd.yaml
+def deep_merge(base, override):
+    result = copy.deepcopy(base)
+    for k, v in override.items():
+        if k in result and isinstance(result[k], dict) and isinstance(v, dict):
+            result[k] = deep_merge(result[k], v)
+        else:
+            result[k] = v
+    return result
 
-localStorage:
-  path: ${MILVUS_DATA}/local
+with open('/etc/milvus/configs/milvus.yaml') as f:
+    base = yaml.safe_load(f)
 
-common:
-  storageType: local
+overrides = {
+    'mq': {'type': 'woodpecker'},
+    'woodpecker': {
+        'storage': {'type': 'local', 'rootPath': f'{milvus_data}/woodpecker'},
+        'logstore': {'segmentSyncPolicy': {'maxIntervalForLocalStorage': '10ms'}},
+    },
+    'etcd': {
+        'endpoints': 'localhost:2379',
+        'use': {'embed': True},
+        'data': {'dir': f'{milvus_data}/etcd'},
+        'config': {'path': '/etc/milvus/configs/embedEtcd.yaml'},
+    },
+    'localStorage': {'path': f'{milvus_data}/local'},
+    'common': {'storageType': 'local'},
+    'rootCoord': {'port': 53100},
+    'dataCoord': {'port': 13333},
+    'queryCoord': {'port': 19531},
+    'queryNode': {'port': 21123},
+    'indexNode': {'port': 21121},
+    'dataNode': {'port': 21124},
+    'proxy': {'port': 19530, 'internalPort': 19529},
+}
 
-rootCoord:
-  port: 53100
-dataCoord:
-  port: 13333
-  segment:
-    minSizeFromIdleToSealed: 16
-queryCoord:
-  port: 19531
-queryNode:
-  port: 21123
-indexNode:
-  port: 21121
-dataNode:
-  port: 21124
-proxy:
-  port: 19530
-  internalPort: 19529
-MILVUS_YAML
+merged = deep_merge(base, overrides)
+with open('/etc/milvus/configs/milvus.yaml', 'w') as f:
+    yaml.dump(merged, f, default_flow_style=False, allow_unicode=True)
+print('[milvus] config deep-merge 완료')
+PYEOF
 
-    echo "[milvus] config 작성 완료: $(ls /etc/milvus/configs/)"
+    echo "[milvus] config 완료: $(ls /etc/milvus/configs/)"
     # MILVUSCONF: initConfPath()가 CWD+/configs를 찾는데 /app/configs 없음 → yaml 미로드
     #   → MILVUSCONF로 명시해야 /etc/milvus/configs/milvus.yaml을 읽음
     # ETCD_DATA_DIR: DEB yaml의 etcd.data.data.dir 키 버그 우회 (코드는 etcd.data.dir 읽음)
