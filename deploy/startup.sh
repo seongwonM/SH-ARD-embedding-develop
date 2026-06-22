@@ -40,10 +40,12 @@ mq:
   type: woodpecker
 
 woodpecker:
-  client:
-    storageType: local
-  localStorage:
+  storage:
+    type: local
     rootPath: ${MILVUS_DATA}/woodpecker
+  logstore:
+    segmentSyncPolicy:
+      maxIntervalForLocalStorage: 10ms
 
 etcd:
   endpoints: localhost:2379
