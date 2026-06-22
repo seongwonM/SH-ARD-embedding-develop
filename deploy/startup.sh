@@ -66,6 +66,8 @@ rootCoord:
   port: 53100
 dataCoord:
   port: 13333
+  segment:
+    minSizeFromIdleToSealed: 16
 queryCoord:
   port: 19531
 queryNode:
