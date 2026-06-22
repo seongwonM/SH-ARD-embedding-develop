@@ -1,0 +1,33 @@
+[
+  {
+    "model": "Qwen/Qwen3-Embedding-8B",
+    "vector_mode": "dense",
+    "datasets": [
+      "data"
+    ],
+    "batch_size": 16,
+    "model_dtype": "auto",
+    "model_load_sec": 57.25,
+    "index_build_sec": 1502.42,
+    "index_docs_per_sec": 43.3,
+    "query_encode_sec": 59.73,
+    "query_encode_qps": 214.3,
+    "search_sec": 168.53,
+    "search_qps": 76.0,
+    "ndcg_at_10": 0.9083,
+    "ndcg_at_20": 0.9124,
+    "ndcg_at_50": 0.9143,
+    "ndcg_at_100": 0.9148,
+    "mrr_at_10": 0.8933,
+    "recall_at_1": 0.8241,
+    "recall_at_5": 0.9455,
+    "recall_at_10": 0.9663,
+    "recall_at_20": 0.9814,
+    "recall_at_50": 0.9895,
+    "recall_at_100": 0.9925,
+    "map_at_10": 0.8866,
+    "map_at_20": 0.8881,
+    "map_at_50": 0.8885,
+    "map_at_100": 0.8885
+  }
+]
