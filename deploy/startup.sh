@@ -40,8 +40,9 @@ mq:
   type: woodpecker
 
 woodpecker:
-  storage:
-    type: local
+  client:
+    storageType: local
+  localStorage:
     rootPath: ${MILVUS_DATA}/woodpecker
 
 etcd:
@@ -92,10 +93,8 @@ MILVUS_YAML
     for _i in $(seq 1 90); do
         if ! kill -0 "$MILVUS_PID" 2>/dev/null; then
             echo "[milvus] 프로세스 비정상 종료!"
-            echo "=== milvus.log HEAD (100줄) ==="
-            head -100 "${MILVUS_DATA}/milvus.log" || true
-            echo "=== milvus.log TAIL (50줄) ==="
-            tail -50 "${MILVUS_DATA}/milvus.log" || true
+            echo "=== milvus.log 전체 ($(wc -l < "${MILVUS_DATA}/milvus.log" 2>/dev/null || echo '?')줄) ==="
+            cat "${MILVUS_DATA}/milvus.log" || true
             sleep infinity
         fi
         if curl -sf http://localhost:9091/healthz >/dev/null 2>&1; then
@@ -106,10 +105,8 @@ MILVUS_YAML
     done
     if [ "$_milvus_ok" -eq 0 ]; then
         echo "[milvus] 헬스체크 타임아웃!"
-        echo "=== milvus.log HEAD (100줄) ==="
-        head -100 "${MILVUS_DATA}/milvus.log" || true
-        echo "=== milvus.log TAIL (50줄) ==="
-        tail -50 "${MILVUS_DATA}/milvus.log" || true
+        echo "=== milvus.log 전체 ($(wc -l < "${MILVUS_DATA}/milvus.log" 2>/dev/null || echo '?')줄) ==="
+        cat "${MILVUS_DATA}/milvus.log" || true
         sleep infinity
     fi
     echo "[milvus] 서버 준비 완료"
