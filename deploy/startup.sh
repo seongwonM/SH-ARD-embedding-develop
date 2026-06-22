@@ -180,7 +180,7 @@ if [ -n "${GH_TOKEN:-}" ]; then
         git config user.email 'pod@runpod.io'
         git config user.name 'RunPod'
         mkdir -p results
-        cp "$RESULT_FILE" "results/${MODEL_SAFE:-all}${MODE_SUFFIX:-}${DB_SUFFIX}.json"
+        cp "$RESULT_FILE" "results/${MODEL_SAFE:-all}${MODE_SUFFIX:-}${DB_SUFFIX}_$(date +%Y%m%d_%H%M%S).json"
         echo "[git] 결과 파일 복사 완료"
         git add results/
         if git diff --cached --quiet; then
