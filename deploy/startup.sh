@@ -69,7 +69,16 @@ overrides = {
     'queryNode': {'port': 21123},
     'indexNode': {'port': 21121},
     'dataNode': {'port': 21124},
-    'proxy': {'port': 19530, 'internalPort': 19529},
+    'proxy': {
+        'port': 19530,
+        'internalPort': 19529,
+        'grpc': {
+            'serverMaxRecvSize': 268435456,
+            'serverMaxSendSize': 268435456,
+            'clientMaxRecvSize': 268435456,
+            'clientMaxSendSize': 268435456,
+        },
+    },
 }
 
 merged = deep_merge(base, overrides)
