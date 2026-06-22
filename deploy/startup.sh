@@ -24,37 +24,25 @@ DB_SUFFIX="_${VECTOR_DB}"
 REPORTS_PATH="/workspace/reports/${MODEL_SAFE:-all}${MODE_SUFFIX:-}${DB_SUFFIX}"
 
 if [ "$VECTOR_DB" = "milvus" ]; then
-    # Milvus Standalone (DEB 패키지 바이너리) — embedded etcd + local storage + natsmq
+    # Milvus Standalone (DEB 패키지 바이너리) — embedded etcd + local storage + woodpecker
     MILVUS_DATA="/workspace/milvus_data/${MODEL_SAFE:-default}${MODE_SUFFIX:-}"
-    # 이전 크래시로 인한 stale etcd/natsmq 데이터 방지: 항상 fresh start
+    # 이전 크래시로 인한 stale 데이터 방지: 항상 fresh start
     rm -rf "${MILVUS_DATA}"
-    mkdir -p "${MILVUS_DATA}/etcd" "${MILVUS_DATA}/nats" "${MILVUS_DATA}/local"
+    mkdir -p "${MILVUS_DATA}/etcd" "${MILVUS_DATA}/woodpecker" "${MILVUS_DATA}/local"
 
     # 완전한 milvus.yaml 작성:
-    # - 이 DEB 바이너리는 Rocksmq:false, Natsmq:true → mq.type: natsmq 명시 필요
+    # - v2.6.x: natsmq 제거됨 → woodpecker(신규 WAL) 사용
     # - DEB 원본 yaml 덮어쓰기 → 모든 설정을 여기에 포함 (포트, MQ, etcd, storage)
     # - etcd.data.dir 키는 yaml에도 쓰되 env var ETCD_DATA_DIR로 이중 보장
     mkdir -p /etc/milvus/configs
     cat > /etc/milvus/configs/milvus.yaml << MILVUS_YAML
 mq:
-  type: natsmq
+  type: woodpecker
 
-natsmq:
-  server:
-    port: 4222
-    storeDir: ${MILVUS_DATA}/nats
-    maxFileStore: 17179869184
-    maxPayload: 8388608
-    maxPending: 67108864
-    initializeTimeout: 4000
-    monitor:
-      trace: false
-      debug: false
-      logTime: true
-      logFile: ${MILVUS_DATA}/nats.log
-      logSizeLimit: 536870912
-    retention:
-      maxAge: 4320
+woodpecker:
+  storage:
+    type: local
+    rootPath: ${MILVUS_DATA}/woodpecker
 
 etcd:
   endpoints: localhost:2379
