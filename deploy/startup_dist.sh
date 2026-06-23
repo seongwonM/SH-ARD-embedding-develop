@@ -177,6 +177,12 @@ DATA_DIR="/tmp/latest/data"
 REPORTS_PATH="/workspace/reports/dist_${MODEL_SAFE:-all}${MODE_SUFFIX:-}"
 mkdir -p "${REPORTS_PATH}"
 
+# BASELINE_JSON 미설정 시 startup.sh 결과 파일에서 자동 탐색
+if [ -z "${BASELINE_JSON:-}" ]; then
+    _BL="/workspace/reports/${MODEL_SAFE:-all}${MODE_SUFFIX:-}_milvus/summary.json"
+    [ -f "$_BL" ] && BASELINE_JSON="$_BL" && echo "[baseline] 자동 감지: $_BL"
+fi
+
 python -m bench.dist_bench \
     --milvus-uri "http://localhost:19530" \
     --data-root  "${DATA_DIR}" \
