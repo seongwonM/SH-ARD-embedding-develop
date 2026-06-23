@@ -136,7 +136,8 @@ class MilvusStore:
         n = len(vectors)
         all_results: list[list[tuple[str, float]]] = []
         n_batches = (n + CHUNK - 1) // CHUNK
-        log_every = max(1, n_batches // 10)
+        # colbert는 브루트포스라 배치당 시간이 길어서 매 배치 로깅
+        log_every = 1 if vector_mode == "colbert" else max(1, n_batches // 10)
         t0 = time.time()
 
         for start in range(0, n, CHUNK):
