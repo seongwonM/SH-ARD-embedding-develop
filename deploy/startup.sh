@@ -24,11 +24,15 @@ MODEL_SAFE=$(echo "${MODEL_ID:-}" | tr '/' '_')
 MODE_SUFFIX=${VECTOR_MODE:+_${VECTOR_MODE}}
 VECTOR_DB="${VECTOR_DB:-qdrant}"
 DB_SUFFIX="_${VECTOR_DB}"
-REPORTS_PATH="/workspace/reports/${MODEL_SAFE:-all}${MODE_SUFFIX:-}${DB_SUFFIX}"
+
+# Instant Cluster에서 NODE_RANK가 주입되면 각 pod이 독립 경로 사용 (NFS 충돌 방지)
+# DIST_TEST 없이도 multi-pod 병렬 벤치마크 가능
+_RANK_SUFFIX="${NODE_RANK:+_rank${NODE_RANK}}"
+REPORTS_PATH="/workspace/reports/${MODEL_SAFE:-all}${MODE_SUFFIX:-}${DB_SUFFIX}${_RANK_SUFFIX}"
 
 if [ "$VECTOR_DB" = "milvus" ]; then
     # Milvus Standalone (DEB 패키지 바이너리) — embedded etcd + local storage + woodpecker
-    MILVUS_DATA="/workspace/milvus_data/${MODEL_SAFE:-default}${MODE_SUFFIX:-}"
+    MILVUS_DATA="/workspace/milvus_data/${MODEL_SAFE:-default}${MODE_SUFFIX:-}${_RANK_SUFFIX}"
     # 디렉터리 보장 (기존 데이터 보존 — runner.py가 불완전 컬렉션 감지 시 drop/재색인)
     mkdir -p "${MILVUS_DATA}/etcd" "${MILVUS_DATA}/woodpecker" "${MILVUS_DATA}/local"
 
@@ -132,7 +136,7 @@ PYEOF
     MILVUS_URI="http://localhost:19530"
 else
     # Qdrant 서버 시작 (pod별 독립 스토리지 — RocksDB lock 충돌 방지)
-    QDRANT_STORAGE="/workspace/qdrant_storage/${MODEL_SAFE:-default}${MODE_SUFFIX:-}"
+    QDRANT_STORAGE="/workspace/qdrant_storage/${MODEL_SAFE:-default}${MODE_SUFFIX:-}${_RANK_SUFFIX}"
     mkdir -p "$QDRANT_STORAGE"
     QDRANT__STORAGE__STORAGE_PATH="$QDRANT_STORAGE" \
     QDRANT__LOG_LEVEL=WARN \
@@ -189,7 +193,7 @@ if [ -n "${GH_TOKEN:-}" ]; then
         git config user.email 'pod@runpod.io'
         git config user.name 'RunPod'
         mkdir -p results
-        cp "$RESULT_FILE" "results/${MODEL_SAFE:-all}${MODE_SUFFIX:-}${DB_SUFFIX}_$(date +%Y%m%d_%H%M%S).json"
+        cp "$RESULT_FILE" "results/${MODEL_SAFE:-all}${MODE_SUFFIX:-}${DB_SUFFIX}${_RANK_SUFFIX}_$(date +%Y%m%d_%H%M%S).json"
         echo "[git] 결과 파일 복사 완료"
         git add results/
         if git diff --cached --quiet; then
