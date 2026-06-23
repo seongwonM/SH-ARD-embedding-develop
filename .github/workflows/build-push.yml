@@ -12,6 +12,10 @@ env:
   REGISTRY: ghcr.io
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
+concurrency:
+  group: docker-build
+  cancel-in-progress: true
+
 jobs:
   build-push:
     runs-on: ubuntu-latest
@@ -21,7 +25,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
 
       - name: Set lowercase image name
         id: meta
