@@ -63,6 +63,13 @@ overrides = {
     },
     'localStorage': {'path': f'{milvus_data}/local'},
     'common': {'storageType': 'local'},
+    'streaming': {
+        'flush': {
+            'memoryThreshold': 0.4,
+            'growingSegmentBytesHwmThreshold': 0.08,
+            'growingSegmentBytesLwmThreshold': 0.04,
+        },
+    },
     'rootCoord': {'port': 53100},
     'dataCoord': {'port': 13333},
     'queryCoord': {'port': 19531},
