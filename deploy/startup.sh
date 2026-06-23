@@ -24,18 +24,41 @@ DB_SUFFIX="_${VECTOR_DB}"
 REPORTS_PATH="/workspace/reports/${MODEL_SAFE:-all}${MODE_SUFFIX:-}${DB_SUFFIX}"
 
 if [ "$VECTOR_DB" = "milvus" ]; then
-    # Milvus Standalone (DEB 패키지 바이너리) — embedded etcd + local storage + woodpecker
+    # ── 데이터 경로 (Network Volume /workspace 공유) ──────────────────────────
     MILVUS_DATA="/workspace/milvus_data/${MODEL_SAFE:-default}${MODE_SUFFIX:-}"
-    # 이전 크래시로 인한 stale 데이터 방지: 항상 fresh start
-    rm -rf "${MILVUS_DATA}"
-    mkdir -p "${MILVUS_DATA}/etcd" "${MILVUS_DATA}/woodpecker" "${MILVUS_DATA}/local"
 
-    # DEB 기본 milvus.yaml을 베이스로 유지하고, 우리가 바꿀 값만 Python deep-merge로 패치.
-    # 통째로 덮어쓰면 DEB 기본값(minSizeFromIdleToSealed 등)이 Go 기본값 0으로 떨어져 패닉 발생.
-    python3 - "${MILVUS_DATA}" << 'PYEOF'
-import yaml, copy, sys
+    # ── RunPod Instant Cluster 환경변수 기반 모드 결정 ────────────────────────
+    # NODE_RANK, PRIMARY_ADDR, NODE_ADDR 는 RunPod이 자동 설정
+    _NODE_RANK="${NODE_RANK:-}"
+    _PRIMARY_ADDR="${PRIMARY_ADDR:-}"
+    _NODE_ADDR="${NODE_ADDR:-localhost}"
 
-milvus_data = sys.argv[1]
+    if [ -z "$_NODE_RANK" ]; then
+        _MODE="standalone"
+    elif [ "$_NODE_RANK" = "0" ]; then
+        _MODE="coordinator"
+    else
+        _MODE="worker"
+    fi
+    echo "[milvus] 모드: $_MODE (NODE_RANK=${_NODE_RANK:-unset}, PRIMARY_ADDR=${_PRIMARY_ADDR:-N/A})"
+
+    # coordinator/standalone만 초기화 (worker는 같은 Network Volume 경로 공유)
+    if [ "$_MODE" != "worker" ]; then
+        rm -rf "${MILVUS_DATA}"
+        mkdir -p "${MILVUS_DATA}/etcd" "${MILVUS_DATA}/woodpecker" "${MILVUS_DATA}/local"
+    else
+        mkdir -p "${MILVUS_DATA}/woodpecker" "${MILVUS_DATA}/local"
+    fi
+    mkdir -p /tmp/milvuscfg
+
+    # ── 컴포넌트별 milvus.yaml 생성 (DEB 기본값 deep-merge) ──────────────────
+    # standalone : 하나의 yaml (etcd embed)
+    # coordinator: mixcoord(etcd embed) / streamingnode(localhost) / proxy(localhost)
+    # worker     : datanode(PRIMARY_ADDR) / querynode(PRIMARY_ADDR)
+    python3 - "${MILVUS_DATA}" "${_MODE}" "${_PRIMARY_ADDR}" << 'PYEOF'
+import yaml, copy, sys, os
+
+milvus_data, mode, primary_addr = sys.argv[1], sys.argv[2], sys.argv[3]
 
 def deep_merge(base, override):
     result = copy.deepcopy(base)
@@ -49,33 +72,25 @@ def deep_merge(base, override):
 with open('/etc/milvus/configs/milvus.yaml') as f:
     base = yaml.safe_load(f)
 
-overrides = {
+common = {
     'mq': {'type': 'woodpecker'},
     'woodpecker': {
         'storage': {'type': 'local', 'rootPath': f'{milvus_data}/woodpecker'},
         'logstore': {'segmentSyncPolicy': {'maxIntervalForLocalStorage': '10ms'}},
     },
-    'etcd': {
-        'endpoints': 'localhost:2379',
-        'use': {'embed': True},
-        'data': {'dir': f'{milvus_data}/etcd'},
-        'config': {'path': '/etc/milvus/configs/embedEtcd.yaml'},
-    },
     'localStorage': {'path': f'{milvus_data}/local'},
     'common': {'storageType': 'local'},
-    'streaming': {
-        'flush': {
-            'memoryThreshold': 0.4,
-            'growingSegmentBytesHwmThreshold': 0.08,
-            'growingSegmentBytesLwmThreshold': 0.04,
-        },
-    },
-    'rootCoord': {'port': 53100},
-    'dataCoord': {'port': 13333},
+    'streaming': {'flush': {
+        'memoryThreshold': 0.4,
+        'growingSegmentBytesHwmThreshold': 0.08,
+        'growingSegmentBytesLwmThreshold': 0.04,
+    }},
+    'rootCoord':  {'port': 53100},
+    'dataCoord':  {'port': 13333},
     'queryCoord': {'port': 19531},
-    'queryNode': {'port': 21123},
-    'indexNode': {'port': 21121},
-    'dataNode': {'port': 21124},
+    'queryNode':  {'port': 21123},
+    'indexNode':  {'port': 21121},
+    'dataNode':   {'port': 21124},
     'proxy': {
         'port': 19530,
         'internalPort': 19529,
@@ -88,46 +103,139 @@ overrides = {
     },
 }
 
-merged = deep_merge(base, overrides)
-with open('/etc/milvus/configs/milvus.yaml', 'w') as f:
-    yaml.dump(merged, f, default_flow_style=False, allow_unicode=True)
-print('[milvus] config deep-merge 완료')
+# etcd 설정 변형
+etcd_embed  = {
+    'endpoints': 'localhost:2379',
+    'use': {'embed': True},
+    'data': {'dir': f'{milvus_data}/etcd'},
+    'config': {'path': '/etc/milvus/configs/embedEtcd.yaml'},
+}
+etcd_local  = {'endpoints': 'localhost:2379',      'use': {'embed': False}}
+etcd_remote = {'endpoints': f'{primary_addr}:2379', 'use': {'embed': False}}
+
+if mode == 'standalone':
+    components = {'standalone': etcd_embed}
+elif mode == 'coordinator':
+    # mixcoord만 embedded etcd 시작, 나머지는 localhost:2379에 연결
+    components = {
+        'mixcoord':      etcd_embed,
+        'streamingnode': etcd_local,
+        'proxy':         etcd_local,
+    }
+else:  # worker
+    components = {
+        'datanode':  etcd_remote,
+        'querynode': etcd_remote,
+    }
+
+for comp, etcd_cfg in components.items():
+    cfg = deep_merge(base, {**common, 'etcd': etcd_cfg})
+    os.makedirs(f'/tmp/milvuscfg/{comp}', exist_ok=True)
+    with open(f'/tmp/milvuscfg/{comp}/milvus.yaml', 'w') as f:
+        yaml.dump(cfg, f, default_flow_style=False, allow_unicode=True)
+    print(f'[milvus] {comp} config 생성')
 PYEOF
 
-    echo "[milvus] config 완료: $(ls /etc/milvus/configs/)"
-    # MILVUSCONF: initConfPath()가 CWD+/configs를 찾는데 /app/configs 없음 → yaml 미로드
-    #   → MILVUSCONF로 명시해야 /etc/milvus/configs/milvus.yaml을 읽음
-    # ETCD_DATA_DIR: DEB yaml의 etcd.data.data.dir 키 버그 우회 (코드는 etcd.data.dir 읽음)
-    MILVUSCONF=/etc/milvus/configs \
-    ETCD_DATA_DIR="${MILVUS_DATA}/etcd" \
-    DEPLOY_MODE=STANDALONE \
-    milvus run standalone >"${MILVUS_DATA}/milvus.log" 2>&1 &
-    MILVUS_PID=$!
-    echo "[milvus] 서버 시작 (PID=$MILVUS_PID, log=${MILVUS_DATA}/milvus.log), 준비 대기 중..."
+    # coordinator: embedded etcd를 외부 노드(worker)에서도 접근 가능하도록 설정
+    if [ "$_MODE" = "coordinator" ]; then
+        python3 - "${_NODE_ADDR}" << 'PYEOF2'
+import yaml, sys
+node_addr = sys.argv[1]
+try:
+    with open('/etc/milvus/configs/embedEtcd.yaml') as f:
+        cfg = yaml.safe_load(f) or {}
+except FileNotFoundError:
+    cfg = {}
+cfg['listen-client-urls']    = 'http://0.0.0.0:2379'
+cfg['advertise-client-urls'] = f'http://{node_addr}:2379'
+cfg['listen-peer-urls']      = 'http://0.0.0.0:2380'
+with open('/etc/milvus/configs/embedEtcd.yaml', 'w') as f:
+    yaml.dump(cfg, f, default_flow_style=False)
+print(f'[milvus] embedEtcd 외부 접근 활성화 (advertise={node_addr}:2379)')
+PYEOF2
+    fi
 
-    # 프로세스 생존 확인하며 헬스체크 (크래시 시 로그 앞부분 + 뒷부분 출력)
-    _milvus_ok=0
-    for _i in $(seq 1 90); do
-        if ! kill -0 "$MILVUS_PID" 2>/dev/null; then
-            echo "[milvus] 프로세스 비정상 종료!"
-            echo "=== milvus.log 전체 ($(wc -l < "${MILVUS_DATA}/milvus.log" 2>/dev/null || echo '?')줄) ==="
+    # ── Standalone ────────────────────────────────────────────────────────────
+    if [ "$_MODE" = "standalone" ]; then
+        MILVUSCONF=/tmp/milvuscfg/standalone \
+        ETCD_DATA_DIR="${MILVUS_DATA}/etcd" \
+        DEPLOY_MODE=STANDALONE \
+            milvus run standalone >"${MILVUS_DATA}/milvus.log" 2>&1 &
+        MILVUS_PID=$!
+        echo "[milvus] standalone 시작 (PID=$MILVUS_PID), 준비 대기 중..."
+
+        _milvus_ok=0
+        for _i in $(seq 1 90); do
+            if ! kill -0 "$MILVUS_PID" 2>/dev/null; then
+                echo "[milvus] 프로세스 비정상 종료!"
+                echo "=== milvus.log ===" && cat "${MILVUS_DATA}/milvus.log" || true
+                sleep infinity
+            fi
+            curl -sf http://localhost:9091/healthz >/dev/null 2>&1 && { _milvus_ok=1; break; }
+            sleep 2
+        done
+        if [ "$_milvus_ok" -eq 0 ]; then
+            echo "[milvus] 헬스체크 타임아웃!"
             cat "${MILVUS_DATA}/milvus.log" || true
             sleep infinity
         fi
-        if curl -sf http://localhost:9091/healthz >/dev/null 2>&1; then
-            _milvus_ok=1
-            break
+        echo "[milvus] standalone 준비 완료"
+
+    # ── Coordinator (Instant Cluster NODE_RANK=0) ──────────────────────────────
+    elif [ "$_MODE" = "coordinator" ]; then
+        # 1) mixcoord: embedded etcd + rootCoord/dataCoord/queryCoord/indexCoord
+        MILVUSCONF=/tmp/milvuscfg/mixcoord \
+        ETCD_DATA_DIR="${MILVUS_DATA}/etcd" \
+            milvus run mixcoord >"${MILVUS_DATA}/mixcoord.log" 2>&1 &
+
+        # 2) embedded etcd 포트(2379) 열릴 때까지 대기
+        echo "[milvus] embedded etcd 대기 중..."
+        for _i in $(seq 1 60); do
+            nc -z localhost 2379 2>/dev/null && break || sleep 2
+        done
+
+        # 3) streamingnode + proxy (localhost etcd에 연결)
+        MILVUSCONF=/tmp/milvuscfg/streamingnode \
+            milvus run streamingnode >"${MILVUS_DATA}/streamingnode.log" 2>&1 &
+        MILVUSCONF=/tmp/milvuscfg/proxy \
+            milvus run proxy >"${MILVUS_DATA}/proxy.log" 2>&1 &
+
+        # 4) proxy 헬스체크
+        _milvus_ok=0
+        for _i in $(seq 1 120); do
+            curl -sf http://localhost:9091/healthz >/dev/null 2>&1 && { _milvus_ok=1; break; }
+            sleep 3
+        done
+        if [ "$_milvus_ok" -eq 0 ]; then
+            echo "[milvus] coordinator 헬스체크 타임아웃!"
+            echo "=== mixcoord.log ===" && cat "${MILVUS_DATA}/mixcoord.log" || true
+            echo "=== proxy.log ===" && cat "${MILVUS_DATA}/proxy.log" || true
+            sleep infinity
         fi
-        sleep 2
-    done
-    if [ "$_milvus_ok" -eq 0 ]; then
-        echo "[milvus] 헬스체크 타임아웃!"
-        echo "=== milvus.log 전체 ($(wc -l < "${MILVUS_DATA}/milvus.log" 2>/dev/null || echo '?')줄) ==="
-        cat "${MILVUS_DATA}/milvus.log" || true
+        echo "[milvus] coordinator 준비 완료 (mixcoord + streamingnode + proxy)"
+
+    # ── Worker (Instant Cluster NODE_RANK>0) ──────────────────────────────────
+    else
+        # coordinator의 etcd(2379)가 열릴 때까지 대기
+        echo "[milvus-worker] coordinator etcd 대기 중 (${_PRIMARY_ADDR}:2379)..."
+        until nc -z "${_PRIMARY_ADDR}" 2379 2>/dev/null; do sleep 5; done
+        # mixcoord가 etcd에 완전히 등록될 때까지 추가 대기
+        sleep 15
+        echo "[milvus-worker] coordinator 연결 확인"
+
+        MILVUSCONF=/tmp/milvuscfg/datanode \
+            milvus run datanode >"${MILVUS_DATA}/datanode.log" 2>&1 &
+        MILVUSCONF=/tmp/milvuscfg/querynode \
+            milvus run querynode >"${MILVUS_DATA}/querynode.log" 2>&1 &
+
+        echo "[milvus-worker] datanode + querynode 시작 완료"
+        echo "[milvus-worker] coordinator 벤치마크 완료 시 클러스터 종료됨"
+        # worker는 벤치마크를 실행하지 않음 — cluster 종료까지 대기
         sleep infinity
     fi
-    echo "[milvus] 서버 준비 완료"
+
     MILVUS_URI="http://localhost:19530"
+
 else
     # Qdrant 서버 시작 (pod별 독립 스토리지 — RocksDB lock 충돌 방지)
     QDRANT_STORAGE="/workspace/qdrant_storage/${MODEL_SAFE:-default}${MODE_SUFFIX:-}"
@@ -190,7 +298,6 @@ if [ -n "${GH_TOKEN:-}" ]; then
             echo "[git] 변경 없음 (이미 push됨)"
         else
             git commit -m "result: ${MODEL_SAFE:-all} 벤치마크 완료"
-            # 다른 pod가 먼저 push한 경우 충돌 방지
             git pull --rebase origin main || echo "[git] rebase 실패 — 그냥 push 시도"
             git push && echo "[git] push 완료" || echo "[git] push 실패 — 수동 확인 필요"
         fi
