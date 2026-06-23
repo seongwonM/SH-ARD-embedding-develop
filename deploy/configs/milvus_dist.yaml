@@ -1,0 +1,48 @@
+# Milvus 분산 클러스터용 공통 설정 (docker-compose.dist.yml 전용)
+# woodpecker storage: minio (분산 모드 필수)
+mq:
+  type: woodpecker
+
+woodpecker:
+  storage:
+    type: minio
+    rootPath: woodpecker
+  logstore:
+    segmentSyncPolicy:
+      maxIntervalForLocalStorage: 10ms
+
+minio:
+  address: minio
+  port: 9000
+  accessKeyID: minioadmin
+  secretAccessKey: minioadmin
+  bucketName: milvus-bucket
+  useSSL: false
+  useIAM: false
+
+etcd:
+  endpoints: etcd:2379
+  use:
+    embed: false
+
+common:
+  storageType: minio
+
+rootCoord:
+  port: 53100
+dataCoord:
+  port: 13333
+queryCoord:
+  port: 19531
+queryNode:
+  port: 21123
+dataNode:
+  port: 21124
+proxy:
+  port: 19530
+  internalPort: 19529
+  grpc:
+    serverMaxRecvSize: 268435456
+    serverMaxSendSize: 268435456
+    clientMaxRecvSize: 268435456
+    clientMaxSendSize: 268435456
