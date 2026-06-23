@@ -42,13 +42,8 @@ if [ "$VECTOR_DB" = "milvus" ]; then
     fi
     echo "[milvus] 모드: $_MODE (NODE_RANK=${_NODE_RANK:-unset}, PRIMARY_ADDR=${_PRIMARY_ADDR:-N/A})"
 
-    # coordinator/standalone만 초기화 (worker는 같은 Network Volume 경로 공유)
-    if [ "$_MODE" != "worker" ]; then
-        rm -rf "${MILVUS_DATA}"
-        mkdir -p "${MILVUS_DATA}/etcd" "${MILVUS_DATA}/woodpecker" "${MILVUS_DATA}/local"
-    else
-        mkdir -p "${MILVUS_DATA}/woodpecker" "${MILVUS_DATA}/local"
-    fi
+    # 디렉터리 보장 (기존 데이터 보존 — runner.py가 불완전 컬렉션 감지 시 drop/재색인)
+    mkdir -p "${MILVUS_DATA}/etcd" "${MILVUS_DATA}/woodpecker" "${MILVUS_DATA}/local"
     mkdir -p /tmp/milvuscfg
 
     # ── 컴포넌트별 milvus.yaml 생성 (DEB 기본값 deep-merge) ──────────────────
