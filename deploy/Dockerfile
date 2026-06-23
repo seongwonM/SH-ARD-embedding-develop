@@ -28,11 +28,11 @@ RUN pip install --no-cache-dir -r requirements.txt \
 
 COPY bench ./bench
 COPY deploy/startup.sh /startup.sh
-RUN chmod +x /startup.sh
+COPY deploy/startup_dist.sh /startup_dist.sh
+RUN chmod +x /startup.sh /startup_dist.sh
 
-# MODEL_ID / VECTOR_MODE 환경변수로 pod별 모델 지정
-#   pod1: MODEL_ID=BAAI/bge-m3
-#   pod2: MODEL_ID=Qwen/Qwen3-Embedding-0.6B
-#   pod3: MODEL_ID=Qwen/Qwen3-Embedding-4B
-#   pod4: MODEL_ID=Qwen/Qwen3-Embedding-8B
+# RunPod 환경변수로 pod별 설정 지정:
+#   MODEL_ID, VECTOR_MODE, VECTOR_DB, BATCH_SIZE
+#   분산 테스트용 (startup_dist.sh): REPLICAS, WORKERS, WORKER_WAIT_SEC, BASELINE_JSON
+#   Instant Cluster: NODE_RANK, PRIMARY_ADDR, NODE_ADDR (RunPod 자동 주입)
 CMD ["/bin/bash", "/startup.sh"]
