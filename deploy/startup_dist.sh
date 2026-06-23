@@ -51,11 +51,12 @@ fi
 echo "[milvus] 모드: $_MODE (NODE_RANK=${_NODE_RANK:-unset})"
 
 mkdir -p "${MILVUS_DATA}/etcd" "${MILVUS_DATA}/woodpecker" "${MILVUS_DATA}/local"
-mkdir -p /tmp/milvuscfg_dist
 
-# ── 컴포넌트별 config 생성 ─────────────────────────────────────────────────────
+# ── Milvus config 생성 ────────────────────────────────────────────────────────
+# startup.sh 와 동일하게 /etc/milvus/configs/milvus.yaml 에 직접 씀
+# (MILVUSCONF=/etc/milvus/configs 을 써야 Milvus가 config를 정상 로드함)
 python3 - "${MILVUS_DATA}" "${_MODE}" "${_PRIMARY_ADDR}" << 'PYEOF'
-import yaml, copy, sys, os
+import yaml, copy, sys
 
 milvus_data, mode, primary_addr = sys.argv[1], sys.argv[2], sys.argv[3]
 
@@ -92,31 +93,24 @@ common = {
                        'clientMaxRecvSize': 268435456, 'clientMaxSendSize': 268435456}},
 }
 
-etcd_embed  = {'endpoints': 'localhost:2379', 'use': {'embed': True},
-               'data': {'dir': f'{milvus_data}/etcd'},
-               'config': {'path': '/etc/milvus/configs/embedEtcd.yaml'}}
-etcd_local  = {'endpoints': 'localhost:2379',       'use': {'embed': False}}
-etcd_remote = {'endpoints': f'{primary_addr}:2379', 'use': {'embed': False}}
-
 if mode in ('standalone', 'coordinator'):
-    # coordinator도 milvus run standalone으로 실행 — embedded etcd는 standalone만 지원
-    # 워커 pod들이 추가 querynode/datanode를 등록하면 QueryCoord가 자동으로 활용
-    components = {'standalone': etcd_embed}
+    etcd_cfg = {'endpoints': 'localhost:2379', 'use': {'embed': True},
+                'data': {'dir': f'{milvus_data}/etcd'},
+                'config': {'path': '/etc/milvus/configs/embedEtcd.yaml'}}
 else:
-    components = {'datanode': etcd_remote, 'querynode': etcd_remote}
+    etcd_cfg = {'endpoints': f'{primary_addr}:2379', 'use': {'embed': False}}
 
-for comp, etcd_cfg in components.items():
-    cfg = deep_merge(base, {**common, 'etcd': etcd_cfg})
-    os.makedirs(f'/tmp/milvuscfg_dist/{comp}', exist_ok=True)
-    with open(f'/tmp/milvuscfg_dist/{comp}/milvus.yaml', 'w') as f:
-        yaml.dump(cfg, f, default_flow_style=False, allow_unicode=True)
-    print(f'[milvus] {comp} config 생성')
+cfg = deep_merge(base, {**common, 'etcd': etcd_cfg})
+with open('/etc/milvus/configs/milvus.yaml', 'w') as f:
+    yaml.dump(cfg, f, default_flow_style=False, allow_unicode=True)
+print(f'[milvus] config 생성 완료 (mode={mode})')
 PYEOF
 
+# coordinator: embedded etcd를 외부에서 접근 가능하도록 설정
 if [ "$_MODE" = "coordinator" ]; then
     python3 - "${_NODE_ADDR}" << 'PYEOF2'
 import yaml, sys
-node_addr = sys.argv[1].split('/')[0]  # CIDR 표기 제거 (e.g. 10.65.0.2/24 → 10.65.0.2)
+node_addr = sys.argv[1].split('/')[0]  # CIDR 표기 제거
 try:
     with open('/etc/milvus/configs/embedEtcd.yaml') as f:
         cfg = yaml.safe_load(f) or {}
@@ -133,7 +127,8 @@ fi
 
 # ── Milvus 실행 ───────────────────────────────────────────────────────────────
 if [ "$_MODE" = "standalone" ] || [ "$_MODE" = "coordinator" ]; then
-    MILVUSCONF=/tmp/milvuscfg_dist/standalone \
+    # startup.sh 와 동일한 방식: MILVUSCONF=/etc/milvus/configs
+    MILVUSCONF=/etc/milvus/configs \
     ETCD_DATA_DIR="${MILVUS_DATA}/etcd" \
     DEPLOY_MODE=STANDALONE \
         milvus run standalone >"${MILVUS_DATA}/milvus.log" 2>&1 &
@@ -155,14 +150,14 @@ if [ "$_MODE" = "standalone" ] || [ "$_MODE" = "coordinator" ]; then
     fi
 
 else
-    # worker: coordinator healthz 대기 (nc 대신 curl 사용)
+    # worker: coordinator healthz 대기
     echo "[worker] coordinator 대기 (http://${_PRIMARY_ADDR}:9091/healthz)..."
     until curl -sf "http://${_PRIMARY_ADDR}:9091/healthz" >/dev/null 2>&1; do sleep 5; done
     sleep 10
 
-    MILVUSCONF=/tmp/milvuscfg_dist/querynode \
+    MILVUSCONF=/etc/milvus/configs \
         milvus run querynode >"${MILVUS_DATA}/querynode_rank${_NODE_RANK}.log" 2>&1 &
-    MILVUSCONF=/tmp/milvuscfg_dist/datanode \
+    MILVUSCONF=/etc/milvus/configs \
         milvus run datanode >"${MILVUS_DATA}/datanode_rank${_NODE_RANK}.log" 2>&1 &
 
     echo "[worker] querynode + datanode 시작 (rank=${_NODE_RANK})"
@@ -178,9 +173,15 @@ REPORTS_PATH="/workspace/reports/dist_${MODEL_SAFE:-all}${MODE_SUFFIX:-}"
 mkdir -p "${REPORTS_PATH}"
 
 # BASELINE_JSON 미설정 시 startup.sh 결과 파일에서 자동 탐색
+# startup.sh 결과: NODE_RANK 없으면 suffix 없음, NODE_RANK=0이면 _rank0
 if [ -z "${BASELINE_JSON:-}" ]; then
-    _BL="/workspace/reports/${MODEL_SAFE:-all}${MODE_SUFFIX:-}_milvus/summary.json"
-    [ -f "$_BL" ] && BASELINE_JSON="$_BL" && echo "[baseline] 자동 감지: $_BL"
+    _BL_BASE="/workspace/reports/${MODEL_SAFE:-all}${MODE_SUFFIX:-}_milvus"
+    if [ -f "${_BL_BASE}/summary.json" ]; then
+        BASELINE_JSON="${_BL_BASE}/summary.json"
+    elif [ -f "${_BL_BASE}_rank0/summary.json" ]; then
+        BASELINE_JSON="${_BL_BASE}_rank0/summary.json"
+    fi
+    [ -n "${BASELINE_JSON:-}" ] && echo "[baseline] 자동 감지: ${BASELINE_JSON}"
 fi
 
 python -m bench.dist_bench \
