@@ -252,6 +252,9 @@ MODEL_ARG=""
 MODE_ARG=""
 [ -n "${VECTOR_MODE:-}" ] && MODE_ARG="--vector-mode ${VECTOR_MODE}"
 
+CONC_ARG=""
+[ -n "${SEARCH_CONCURRENCY:-}" ] && CONC_ARG="--search-concurrency ${SEARCH_CONCURRENCY}"
+
 # 데이터 경로 결정: git clone 성공 시 /tmp/latest/data, 실패 시 /workspace/datasets fallback
 DATA_DIR="/tmp/latest/data"
 if [ ! -f "${DATA_DIR}/corpus_all.parquet" ]; then
@@ -268,6 +271,7 @@ echo "[startup] 데이터 경로: ${DATA_DIR}"
 python -m bench.runner \
     ${MODEL_ARG} \
     ${MODE_ARG} \
+    ${CONC_ARG} \
     --model-dtype auto \
     --batch-size "${BATCH_SIZE:-16}" \
     --out "${REPORTS_PATH}" \

@@ -36,6 +36,7 @@ class QdrantStore(VectorStore):
 
     def __init__(self, url: str) -> None:
         from qdrant_client import QdrantClient
+        self._url = url
         self._client = QdrantClient(url=url, timeout=300, check_compatibility=False)
         print(f"[Qdrant] 서버: {url}", flush=True)
 
@@ -231,6 +232,68 @@ class QdrantStore(VectorStore):
         return all_results
 
     # ── 삭제 ─────────────────────────────────────────────────────────────────
+
+    def search_concurrent(
+        self,
+        name: str,
+        vectors,
+        top_k: int,
+        vector_mode: str = "dense",
+        concurrency: int = 1,
+        duration_sec: int = 30,
+    ) -> dict:
+        """VDBBench 방식 concurrent QPS 측정."""
+        import threading, time, random
+        from qdrant_client import QdrantClient
+        from qdrant_client.models import QueryRequest
+
+        if vector_mode != "dense":
+            return {"qps": None, "p50_ms": None, "p95_ms": None, "p99_ms": None, "total": 0,
+                    "note": f"{vector_mode} concurrent 미지원"}
+
+        latencies: list[float] = []
+        lock = threading.Lock()
+        stop_event = threading.Event()
+        n = len(vectors)
+
+        def _worker():
+            client = QdrantClient(url=self._url, timeout=60, check_compatibility=False)
+            while not stop_event.is_set():
+                idx = random.randint(0, n - 1)
+                t0 = time.perf_counter()
+                client.query_batch_points(
+                    collection_name=name,
+                    requests=[QueryRequest(
+                        query=vectors[idx].tolist(),
+                        using="dense",
+                        limit=top_k,
+                        with_payload=False,
+                    )],
+                )
+                lat = time.perf_counter() - t0
+                with lock:
+                    latencies.append(lat)
+
+        threads = [threading.Thread(target=_worker, daemon=True) for _ in range(concurrency)]
+        for t in threads:
+            t.start()
+        time.sleep(duration_sec)
+        stop_event.set()
+        for t in threads:
+            t.join(timeout=10)
+
+        if not latencies:
+            return {"qps": 0, "p50_ms": 0, "p95_ms": 0, "p99_ms": 0, "total": 0}
+
+        latencies.sort()
+        m = len(latencies)
+        return {
+            "qps":    round(m / duration_sec, 1),
+            "p50_ms": round(latencies[int(m * 0.50)] * 1000, 1),
+            "p95_ms": round(latencies[int(m * 0.95)] * 1000, 1),
+            "p99_ms": round(latencies[int(m * 0.99)] * 1000, 1),
+            "total":  m,
+        }
 
     def drop_collection(self, name: str) -> None:
         self._client.delete_collection(name)

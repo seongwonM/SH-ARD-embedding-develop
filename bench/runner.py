@@ -84,6 +84,8 @@ def run_model(
     batch_size:       int,
     model_dtype:      str,
     vector_mode:      str = "dense",
+    search_concurrency: list[int] | None = None,
+    search_duration:    int = 30,
 ) -> dict:
     mode_suffix = f"_{vector_mode}"
     collection = _safe_name(model_id) + mode_suffix
@@ -142,8 +144,6 @@ def run_model(
     raw_results = store.search_batch(collection, q_embs, top_k=100, vector_mode=vector_mode)
     search_sec = round(time.time() - t0, 2)
     search_qps = round(len(q_ids) / search_sec, 1)
-    del q_embs
-    gc.collect()
     print(f"  검색: {search_sec}s  ({search_qps} queries/s)", flush=True)
 
     run = {q_ids[i]: {doc_id: score for doc_id, score in hits}
@@ -151,6 +151,33 @@ def run_model(
 
     # 평가
     metrics = evaluate(run, combined_qrels)
+
+    # ── Concurrent QPS 벤치마크 (VDBBench 방식) ───────────────────────────────
+    # 순차 검색(recall 측정용)과 별개로, N 스레드 동시 검색으로 처리량/레이턴시 측정
+    concurrent_results: dict = {}
+    if search_concurrency and hasattr(store, "search_concurrent"):
+        print(f"\n  [concurrent 벤치마크] duration={search_duration}s per level", flush=True)
+        for c in search_concurrency:
+            print(f"  concurrency={c} 시작...", flush=True)
+            stats = store.search_concurrent(
+                collection, q_embs, top_k=100,
+                vector_mode=vector_mode,
+                concurrency=c,
+                duration_sec=search_duration,
+            )
+            concurrent_results[str(c)] = stats
+            if stats.get("qps") is not None:
+                print(
+                    f"  concurrency={c}  QPS={stats['qps']}  "
+                    f"p50={stats['p50_ms']}ms  p95={stats['p95_ms']}ms  p99={stats['p99_ms']}ms  "
+                    f"(n={stats['total']})",
+                    flush=True,
+                )
+            else:
+                print(f"  concurrency={c}  {stats.get('note', '결과없음')}", flush=True)
+
+    del q_embs
+    gc.collect()
 
     model.close()
 
@@ -171,12 +198,14 @@ def run_model(
         "model_dtype":  model_dtype,
         # ── 성능 지표 ──────────────────────────────
         "model_load_sec":       model_load_sec,
-        "index_build_sec":      index_build_sec,      # None = 캐시 재사용
-        "index_docs_per_sec":   index_docs_per_sec,   # None = 캐시 재사용
+        "index_build_sec":      index_build_sec,
+        "index_docs_per_sec":   index_docs_per_sec,
         "query_encode_sec":     query_encode_sec,
         "query_encode_qps":     query_encode_qps,
         "search_sec":           search_sec,
         "search_qps":           search_qps,
+        # ── Concurrent QPS (standalone vs distributed 비교 핵심 지표) ──────────
+        "concurrent": concurrent_results,
         # ── 검색 품질 지표 ─────────────────────────
         **metrics,
     }
@@ -212,6 +241,18 @@ def main() -> None:
                     help="Qdrant 서버 URL (default: http://localhost:6333)")
     ap.add_argument("--milvus-uri", default=os.getenv("MILVUS_URI", "http://localhost:19530"),
                     help="Milvus 서버 URI (default: $MILVUS_URI or 'http://localhost:19530')")
+
+    # Concurrent QPS 벤치마크 (VDBBench 방식 — standalone vs distributed 비교용)
+    ap.add_argument(
+        "--search-concurrency", type=int, nargs="+", default=None,
+        metavar="N",
+        help="동시 검색 스레드 수 (복수 지정 가능, e.g. --search-concurrency 1 4 8 16)",
+    )
+    ap.add_argument(
+        "--search-duration", type=int,
+        default=int(os.getenv("SEARCH_DURATION", "30")),
+        help="concurrent 모드 지속 시간(초, default=30)",
+    )
 
     # 출력
     ap.add_argument("--out", default="reports", help="결과 저장 디렉터리")
@@ -250,6 +291,8 @@ def main() -> None:
                 combined_docs, combined_queries, combined_qrels, task_names,
                 args.batch_size, args.model_dtype,
                 vector_mode=vector_mode,
+                search_concurrency=args.search_concurrency,
+                search_duration=args.search_duration,
             )
         except MemoryError as e:
             print(f"\n[ERROR] RAM OOM: {e}", flush=True)

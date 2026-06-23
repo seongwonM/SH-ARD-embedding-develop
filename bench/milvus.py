@@ -24,10 +24,11 @@ class MilvusStore:
 
     def __init__(self, uri: str, token: str = "") -> None:
         from pymilvus import MilvusClient
-        kwargs = {"uri": uri}
+        self._uri = uri
+        self._token = token
+        kwargs = {"uri": uri, "timeout": 300}
         if token:
             kwargs["token"] = token
-        kwargs["timeout"] = 300
         self._client = MilvusClient(**kwargs)
         print(f"[Milvus] 서버: {uri}", flush=True)
 
@@ -195,6 +196,69 @@ class MilvusStore:
                 print(f"  검색 진행: {end:,}/{n:,}  ({elapsed:.0f}s, {qps:.1f} q/s)", flush=True)
 
         return all_results
+
+    def search_concurrent(
+        self,
+        name: str,
+        vectors,
+        top_k: int,
+        vector_mode: str = "dense",
+        concurrency: int = 1,
+        duration_sec: int = 30,
+    ) -> dict:
+        """VDBBench 방식 concurrent QPS 측정. 각 스레드가 독립 커넥션으로 랜덤 쿼리 전송."""
+        import threading, time, random
+        from pymilvus import MilvusClient
+
+        if vector_mode != "dense":
+            return {"qps": None, "p50_ms": None, "p95_ms": None, "p99_ms": None, "total": 0,
+                    "note": f"{vector_mode} concurrent 미지원"}
+
+        latencies: list[float] = []
+        lock = threading.Lock()
+        stop_event = threading.Event()
+        n = len(vectors)
+
+        def _worker():
+            kwargs = {"uri": self._uri, "timeout": 60}
+            if self._token:
+                kwargs["token"] = self._token
+            client = MilvusClient(**kwargs)
+            while not stop_event.is_set():
+                idx = random.randint(0, n - 1)
+                t0 = time.perf_counter()
+                client.search(
+                    collection_name=name,
+                    data=[vectors[idx].tolist()],
+                    anns_field="vector",
+                    search_params={"metric_type": "COSINE", "params": {"ef": 100}},
+                    limit=top_k,
+                    output_fields=["doc_id"],
+                )
+                lat = time.perf_counter() - t0
+                with lock:
+                    latencies.append(lat)
+
+        threads = [threading.Thread(target=_worker, daemon=True) for _ in range(concurrency)]
+        for t in threads:
+            t.start()
+        time.sleep(duration_sec)
+        stop_event.set()
+        for t in threads:
+            t.join(timeout=10)
+
+        if not latencies:
+            return {"qps": 0, "p50_ms": 0, "p95_ms": 0, "p99_ms": 0, "total": 0}
+
+        latencies.sort()
+        m = len(latencies)
+        return {
+            "qps":    round(m / duration_sec, 1),
+            "p50_ms": round(latencies[int(m * 0.50)] * 1000, 1),
+            "p95_ms": round(latencies[int(m * 0.95)] * 1000, 1),
+            "p99_ms": round(latencies[int(m * 0.99)] * 1000, 1),
+            "total":  m,
+        }
 
     def drop_collection(self, name: str) -> None:
         self._client.drop_collection(name)
