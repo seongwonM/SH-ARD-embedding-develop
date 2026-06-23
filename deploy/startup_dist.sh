@@ -37,8 +37,9 @@ MODE_SUFFIX=${VECTOR_MODE:+_${VECTOR_MODE}}
 MILVUS_DATA="/workspace/milvus_data/dist_${MODEL_SAFE:-default}${MODE_SUFFIX:-}"
 
 _NODE_RANK="${NODE_RANK:-}"
-_PRIMARY_ADDR="${PRIMARY_ADDR:-}"
-_NODE_ADDR="${NODE_ADDR:-localhost}"
+_PRIMARY_ADDR="${PRIMARY_ADDR%%/*}"    # CIDR 제거 (10.x.x.x/24 → 10.x.x.x)
+_NODE_ADDR="${NODE_ADDR%%/*}"          # CIDR 제거
+_NODE_ADDR="${_NODE_ADDR:-localhost}"
 
 if [ -z "$_NODE_RANK" ]; then
     _MODE="standalone"
@@ -115,7 +116,7 @@ PYEOF
 if [ "$_MODE" = "coordinator" ]; then
     python3 - "${_NODE_ADDR}" << 'PYEOF2'
 import yaml, sys
-node_addr = sys.argv[1]
+node_addr = sys.argv[1].split('/')[0]  # CIDR 표기 제거 (e.g. 10.65.0.2/24 → 10.65.0.2)
 try:
     with open('/etc/milvus/configs/embedEtcd.yaml') as f:
         cfg = yaml.safe_load(f) or {}
