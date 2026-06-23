@@ -16,6 +16,8 @@ import math
 
 _ENCODE_CHUNK = 2_000
 _INSERT_BATCH = 64
+_INSERT_BATCH_COLBERT = 8   # ColBERT은 doc당 토큰 수 × 128dim → 배치당 수십 MB
+_FLUSH_EVERY = 50           # N 배치마다 강제 flush → growing segment 누적 방지
 
 
 # ── MilvusStore ───────────────────────────────────────────────────────────────
@@ -87,7 +89,9 @@ class MilvusStore:
 
     def upload_stream(self, name: str, data_iter, vector_mode: str = "dense") -> None:
         print("  [upload] insert 시작...", flush=True)
+        batch_limit = _INSERT_BATCH_COLBERT if vector_mode == "colbert" else _INSERT_BATCH
         batch: list[dict] = []
+        n_batches = 0
         for pid, doc_id, vec in data_iter:
             if vector_mode == "colbert":
                 row = {
@@ -104,9 +108,12 @@ class MilvusStore:
             else:
                 row = {"id": pid, "doc_id": doc_id, "vector": vec.tolist()}
             batch.append(row)
-            if len(batch) >= _INSERT_BATCH:
+            if len(batch) >= batch_limit:
                 self._client.insert(collection_name=name, data=batch)
                 batch.clear()
+                n_batches += 1
+                if vector_mode == "colbert" and n_batches % _FLUSH_EVERY == 0:
+                    self._client.flush(name)
         if batch:
             self._client.insert(collection_name=name, data=batch)
         print("  [upload] insert 완료", flush=True)
