@@ -1,17 +1,18 @@
 """
-Milvus 분산처리 성능 비교 테스트.
+Milvus 분산처리 QPS 비교 테스트.
 
-기존 bench/runner.py (standalone 기준값)와 독립적으로 동작.
-이미 실행 중인 Milvus 클러스터에 접속해서
-num_shards × replica_number × search_workers 조합별 QPS / NDCG 를 측정한다.
+bench/runner.py 가 만든 컬렉션을 재사용하고
+replica_number × search_workers 조합별 search QPS를 측정해서
+Standalone 기준값과 비교한다.
 
-사용법 (RunPod coordinator 또는 로컬):
+사용법 (RunPod coordinator 또는 standalone pod):
   python -m bench.dist_bench \\
-    --milvus-uri http://localhost:19530 \\
     --model BAAI/bge-m3 \\
-    --num-shards 1 2 \\
-    --replica-number 1 2 \\
-    --search-workers 1 2 4
+    --replicas 1 2 \\
+    --workers 1 2 4
+
+환경변수로도 지정 가능 (startup_dist.sh가 자동 전달):
+  MODEL_ID, VECTOR_MODE, MILVUS_URI, DATA_ROOT
 """
 from __future__ import annotations
 
@@ -29,114 +30,20 @@ from bench.data_loader import load_from_dir
 from bench.evaluator import evaluate
 from bench.model import build_model
 
-_INSERT_BATCH = 64
-_ENCODE_CHUNK = 2_000
+
+def _safe_name(model_id: str) -> str:
+    return re.sub(r"[^a-z0-9_]", "_", model_id.lower())[:200]
 
 
-# ── 컬렉션 생성 ───────────────────────────────────────────────────────────────
+# ── runner.py 와 동일한 검색 파라미터 ─────────────────────────────────────────
 
-def _create_collection(client, name: str, dim: int, vector_mode: str, num_shards: int) -> None:
-    from pymilvus import MilvusClient, DataType
-
-    schema = MilvusClient.create_schema(auto_id=False, enable_dynamic_field=False)
-    schema.add_field("id",     DataType.INT64,  is_primary=True)
-    schema.add_field("doc_id", DataType.VARCHAR, max_length=512)
-
-    index_params = MilvusClient.prepare_index_params()
-
-    if vector_mode == "sparse":
-        schema.add_field("vector", DataType.SPARSE_FLOAT_VECTOR)
-        index_params.add_index("vector", index_type="SPARSE_INVERTED_INDEX", metric_type="IP")
-    elif vector_mode == "colbert":
-        ss = client.create_struct_field_schema()
-        ss.add_field("emb", DataType.FLOAT_VECTOR, dim=dim)
-        schema.add_field("colbert_embs", DataType.ARRAY,
-                         element_type=DataType.STRUCT, struct_schema=ss, max_capacity=512)
-        index_params.add_index("colbert_embs[emb]", index_type="AUTOINDEX",
-                                metric_type="MAX_SIM_COSINE")
-    else:
-        schema.add_field("vector", DataType.FLOAT_VECTOR, dim=dim)
-        index_params.add_index("vector", index_type="HNSW", metric_type="COSINE",
-                                params={"M": 16, "efConstruction": 100})
-
-    client.create_collection(name, schema=schema, index_params=index_params,
-                             num_shards=num_shards)
-    print(f"  컬렉션 생성: {name}  mode={vector_mode}  dim={dim}  shards={num_shards}",
-          flush=True)
-
-
-# ── 인덱싱 ────────────────────────────────────────────────────────────────────
-
-def _index_and_load(client, name: str, model, docs: dict,
-                    batch_size: int, replica_number: int) -> tuple[float, float]:
-    try:
-        import torch
-        has_cuda = torch.cuda.is_available()
-    except ImportError:
-        has_cuda = False
-
-    vector_mode = getattr(model, "vector_mode", "dense")
-    doc_ids = list(docs.keys())
-    n_total = len(doc_ids)
-    n_chunks = math.ceil(n_total / _ENCODE_CHUNK)
-
-    t0 = time.time()
-    point_id = 0
-
-    for ci in range(n_chunks):
-        s = ci * _ENCODE_CHUNK
-        e = min(s + _ENCODE_CHUNK, n_total)
-        texts = [
-            f"{docs[d].get('title', '')} {docs[d]['chunk']}".strip()
-            for d in doc_ids[s:e]
-        ]
-        embs = model.encode_docs(texts, batch_size)
-        del texts
-
-        batch: list[dict] = []
-        for doc_id, vec in zip(doc_ids[s:e], embs):
-            if vector_mode == "colbert":
-                row = {"id": point_id, "doc_id": doc_id,
-                       "colbert_embs": [{"emb": v.tolist()} for v in vec]}
-            elif vector_mode == "sparse":
-                row = {"id": point_id, "doc_id": doc_id,
-                       "vector": {int(k): float(v) for k, v in vec.items()}}
-            else:
-                row = {"id": point_id, "doc_id": doc_id, "vector": vec.tolist()}
-            batch.append(row)
-            point_id += 1
-            if len(batch) >= _INSERT_BATCH:
-                client.insert(name, batch)
-                batch.clear()
-        if batch:
-            client.insert(name, batch)
-
-        del embs
-        if has_cuda:
-            import torch
-            torch.cuda.synchronize()
-            torch.cuda.empty_cache()
-        gc.collect()
-        print(f"  인코딩+인서트: {e:,}/{n_total:,}", flush=True)
-
-    index_sec = time.time() - t0
-
-    client.load_collection(name, replica_number=replica_number)
-    print(f"  load_collection 완료 (replica={replica_number})", flush=True)
-
-    return index_sec, (n_total / index_sec if index_sec > 0 else 0.0)
-
-
-# ── 검색 (동시 worker 지원) ───────────────────────────────────────────────────
-
-def _search_range(client, name: str, vectors, s: int, e: int,
+def _search_chunk(client, col: str, vectors, s: int, e: int,
                   top_k: int, vector_mode: str) -> list:
+    """vectors[s:e] 순차 검색 — runner.py 와 동일한 파라미터."""
     CHUNK = 16 if vector_mode == "colbert" else 256
-    partial: list = []
-
+    out: list = []
     for start in range(s, e, CHUNK):
         end = min(start + CHUNK, e)
-
         if vector_mode == "colbert":
             from pymilvus.client.embedding_list import EmbeddingList
             data = []
@@ -145,40 +52,38 @@ def _search_range(client, name: str, vectors, s: int, e: int,
                 for tv in vectors[i]:
                     el.add(tv.tolist())
                 data.append(el)
-            res = client.search(name, data, anns_field="colbert_embs[emb]",
+            res = client.search(col, data, anns_field="colbert_embs[emb]",
                                 search_params={"metric_type": "MAX_SIM_COSINE"},
                                 limit=top_k, output_fields=["doc_id"], timeout=120)
         elif vector_mode == "sparse":
-            data = [{int(k): float(v) for k, v in vectors[i].items()}
-                    for i in range(start, end)]
-            res = client.search(name, data, anns_field="vector",
+            data = [{int(k): float(v) for k, v in vectors[i].items()} for i in range(start, end)]
+            res = client.search(col, data, anns_field="vector",
                                 search_params={"metric_type": "IP", "params": {}},
                                 limit=top_k, output_fields=["doc_id"])
         else:
             data = [vectors[i].tolist() for i in range(start, end)]
-            res = client.search(name, data, anns_field="vector",
+            res = client.search(col, data, anns_field="vector",
                                 search_params={"metric_type": "COSINE", "params": {"ef": 100}},
                                 limit=top_k, output_fields=["doc_id"])
-
         for hits in res:
-            partial.append([(h["entity"]["doc_id"], h["distance"]) for h in hits])
+            out.append([(h["entity"]["doc_id"], h["distance"]) for h in hits])
+    return out
 
-    return partial
 
-
-def _concurrent_search(client, name: str, vectors, top_k: int,
-                        vector_mode: str, num_workers: int) -> tuple[list, float, float]:
+def run_search(client, col: str, vectors, top_k: int,
+               vector_mode: str, num_workers: int) -> tuple[list, float]:
+    """num_workers 개 스레드로 동시 검색, (results, qps) 반환."""
     n = len(vectors)
     t0 = time.time()
 
     if num_workers <= 1:
-        results = _search_range(client, name, vectors, 0, n, top_k, vector_mode)
+        results = _search_chunk(client, col, vectors, 0, n, top_k, vector_mode)
     else:
         chunk = math.ceil(n / num_workers)
         ranges = [(w * chunk, min((w + 1) * chunk, n))
                   for w in range(num_workers) if w * chunk < n]
         with ThreadPoolExecutor(max_workers=len(ranges)) as ex:
-            futures = [ex.submit(_search_range, client, name, vectors, s, e, top_k, vector_mode)
+            futures = [ex.submit(_search_chunk, client, col, vectors, s, e, top_k, vector_mode)
                        for s, e in ranges]
             results = []
             for f in futures:
@@ -186,199 +91,137 @@ def _concurrent_search(client, name: str, vectors, top_k: int,
 
     elapsed = time.time() - t0
     qps = n / elapsed if elapsed > 0 else 0.0
-    print(f"  검색 완료: {n:,}  workers={num_workers}  ({elapsed:.1f}s, {qps:.1f} q/s)",
-          flush=True)
-    return results, elapsed, qps
+    return results, qps
 
 
-# ── 단일 시나리오 실행 ────────────────────────────────────────────────────────
+# ── 결과 테이블 출력 ──────────────────────────────────────────────────────────
 
-def _safe_name(model_id: str) -> str:
-    return re.sub(r"[^a-z0-9_]", "_", model_id.lower())[:180]
+def _print_table(baseline_qps: float | None, rows: list[dict]) -> None:
+    print(f"\n{'='*64}")
+    print("  분산처리 QPS 비교  (baseline vs distributed)")
+    print(f"{'='*64}")
 
+    if baseline_qps:
+        print(f"  baseline (standalone, replica=1, workers=1): {baseline_qps:.1f} q/s")
+        print()
 
-def run_scenario(
-    uri: str,
-    model_id: str,
-    vector_mode: str,
-    model_dtype: str,
-    batch_size: int,
-    docs: dict,
-    queries: dict,
-    qrels: dict,
-    task_names: list[str],
-    num_shards: int,
-    replica_number: int,
-    search_workers: int,
-    out_dir: str,
-) -> dict:
-    tag = f"s{num_shards}_r{replica_number}_w{search_workers}"
-    col_name = _safe_name(model_id) + f"_{vector_mode}_dist_{tag}"
-    ckpt = os.path.join(out_dir, f"{col_name}.json")
-
-    if os.path.exists(ckpt):
-        print(f"[스킵] {tag} — 결과 존재: {ckpt}", flush=True)
-        with open(ckpt, encoding="utf-8") as f:
-            return json.load(f)
-
-    from pymilvus import MilvusClient
-    client = MilvusClient(uri=uri, timeout=300)
-
-    print(f"\n{'='*60}")
-    print(f"  shards={num_shards}  replica={replica_number}  workers={search_workers}")
-    print(f"  컬렉션: {col_name}")
-    print(f"{'='*60}")
-
-    t_load = time.time()
-    model = build_model(model_id, vector_mode=vector_mode, dtype=model_dtype)
-    model_load_sec = round(time.time() - t_load, 2)
-    print(f"  모델 로드: {model_load_sec}s", flush=True)
-
-    n_docs = len(docs)
-    index_build_sec = None
-    index_docs_per_sec = None
-
-    if client.has_collection(col_name):
-        n_pts = int(client.get_collection_stats(col_name).get("row_count", 0))
-        if n_pts == n_docs:
-            print(f"  [캐시] 컬렉션 존재 ({n_pts:,}건) → load만 수행", flush=True)
-            client.load_collection(col_name, replica_number=replica_number)
-        else:
-            print(f"  [재색인] 불완전 ({n_pts:,}/{n_docs:,})", flush=True)
-            client.drop_collection(col_name)
-            _create_collection(client, col_name, model.dim, vector_mode, num_shards)
-            index_build_sec, index_docs_per_sec = _index_and_load(
-                client, col_name, model, docs, batch_size, replica_number)
-    else:
-        _create_collection(client, col_name, model.dim, vector_mode, num_shards)
-        index_build_sec, index_docs_per_sec = _index_and_load(
-            client, col_name, model, docs, batch_size, replica_number)
-
-    # 쿼리 인코딩
-    q_ids = list(queries.keys())
-    q_texts = [queries[qid] for qid in q_ids]
-    print(f"  query 인코딩 ({len(q_ids):,}건)...", flush=True)
-    t0 = time.time()
-    q_embs = model.encode_queries(q_texts, batch_size)
-    query_encode_sec = round(time.time() - t0, 2)
-    query_encode_qps = round(len(q_ids) / query_encode_sec, 1)
-    del q_texts
-    gc.collect()
-
-    # 검색
-    raw, search_sec, search_qps = _concurrent_search(
-        client, col_name, q_embs, top_k=100,
-        vector_mode=vector_mode, num_workers=search_workers,
-    )
-    del q_embs
-    gc.collect()
-
-    run = {q_ids[i]: {doc_id: score for doc_id, score in hits}
-           for i, hits in enumerate(raw)}
-    metrics = evaluate(run, qrels)
-
-    model.close()
-    client.release_collection(col_name)
-
-    result = {
-        "model":              model_id,
-        "vector_mode":        vector_mode,
-        "datasets":           task_names,
-        "batch_size":         batch_size,
-        "model_dtype":        model_dtype,
-        "num_shards":         num_shards,
-        "replica_number":     replica_number,
-        "search_workers":     search_workers,
-        "model_load_sec":     model_load_sec,
-        "index_build_sec":    round(index_build_sec, 2) if index_build_sec else None,
-        "index_docs_per_sec": round(index_docs_per_sec, 1) if index_docs_per_sec else None,
-        "query_encode_sec":   query_encode_sec,
-        "query_encode_qps":   query_encode_qps,
-        "search_sec":         round(search_sec, 2),
-        "search_qps":         round(search_qps, 1),
-        **metrics,
-    }
-
-    with open(ckpt, "w", encoding="utf-8") as f:
-        json.dump(result, f, ensure_ascii=False, indent=2)
-    print(f"  [저장] {ckpt}", flush=True)
-    return result
+    print(f"  {'replica':>7} {'workers':>7} | {'qps':>8} {'vs base':>8} {'NDCG@10':>8}")
+    print("  " + "-" * 46)
+    for r in rows:
+        ratio = f"{r['search_qps']/baseline_qps:.2f}x" if baseline_qps else "-"
+        print(f"  {r['replica_number']:>7} {r['search_workers']:>7} | "
+              f"{r['search_qps']:>8.1f} {ratio:>8} {r.get('ndcg_at_10', 0):>8.4f}")
+    print("=" * 64)
 
 
-# ── 비교 테이블 출력 ──────────────────────────────────────────────────────────
-
-def _print_table(results: list[dict]) -> None:
-    print(f"\n{'='*72}")
-    print("  분산처리 성능 비교")
-    print(f"{'='*72}")
-    hdr = f"{'shards':>6} {'replica':>7} {'workers':>7} | {'idx docs/s':>10} {'qps':>8} {'NDCG@10':>8}"
-    print(hdr)
-    print("-" * 72)
-    for r in results:
-        idx = r.get("index_docs_per_sec")
-        idx_s = f"{idx:.0f}" if idx else "cached"
-        print(f"{r['num_shards']:>6} {r['replica_number']:>7} {r['search_workers']:>7} | "
-              f"{idx_s:>10} {r['search_qps']:>8.1f} {r.get('ndcg_at_10', 0):>8.4f}")
-    print("=" * 72)
-
-
-# ── Entry point ───────────────────────────────────────────────────────────────
+# ── 메인 ──────────────────────────────────────────────────────────────────────
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Milvus 분산처리 성능 비교 테스트")
-    ap.add_argument("--milvus-uri",      default=os.getenv("MILVUS_URI", "http://localhost:19530"))
-    ap.add_argument("--data-root",       default=os.getenv("DATA_ROOT", "/workspace/datasets"))
-    ap.add_argument("--model",           default=os.getenv("MODEL_ID", "BAAI/bge-m3"))
-    ap.add_argument("--vector-mode",     default=os.getenv("VECTOR_MODE", "dense"),
+    ap = argparse.ArgumentParser(description="Milvus 분산처리 QPS 비교 테스트")
+    ap.add_argument("--milvus-uri",   default=os.getenv("MILVUS_URI", "http://localhost:19530"))
+    ap.add_argument("--data-root",    default=os.getenv("DATA_ROOT", "/workspace/datasets"))
+    ap.add_argument("--model",        default=os.getenv("MODEL_ID", "BAAI/bge-m3"))
+    ap.add_argument("--vector-mode",  default=os.getenv("VECTOR_MODE", "dense"),
                     choices=["dense", "sparse", "colbert"])
-    ap.add_argument("--model-dtype",     default="auto",
-                    choices=["auto", "fp32", "fp16", "bf16"])
-    ap.add_argument("--batch-size",      type=int, default=16)
-    ap.add_argument("--num-shards",      type=int, nargs="+", default=[1],
-                    metavar="N", help="테스트할 num_shards 목록 (예: 1 2 4)")
-    ap.add_argument("--replica-number",  type=int, nargs="+", default=[1],
+    ap.add_argument("--batch-size",   type=int, default=int(os.getenv("BATCH_SIZE", "16")))
+    ap.add_argument("--replicas",     type=int, nargs="+", default=[1, 2],
                     metavar="N", help="테스트할 replica_number 목록 (예: 1 2 4)")
-    ap.add_argument("--search-workers",  type=int, nargs="+", default=[1],
+    ap.add_argument("--workers",      type=int, nargs="+", default=[1, 2, 4],
                     metavar="N", help="동시 검색 스레드 수 목록 (예: 1 2 4 8)")
-    ap.add_argument("--out",             default="/workspace/reports/dist")
+    ap.add_argument("--baseline",     default=None,
+                    help="베이스라인 summary.json 경로 (비교 출력용, 선택)")
+    ap.add_argument("--out",          default="/workspace/reports/dist")
     args = ap.parse_args()
 
     os.makedirs(args.out, exist_ok=True)
 
+    # ── 베이스라인 로드 (비교용) ────────────────────────────────────────────
+    baseline_qps: float | None = None
+    if args.baseline and os.path.exists(args.baseline):
+        with open(args.baseline, encoding="utf-8") as f:
+            bl = json.load(f)
+        if isinstance(bl, list):
+            bl = bl[0]
+        baseline_qps = bl.get("search_qps")
+        print(f"[baseline] {args.baseline}  search_qps={baseline_qps}", flush=True)
+
+    # ── 컬렉션 이름 (runner.py 와 동일 규칙) ───────────────────────────────
+    col = _safe_name(args.model) + f"_{args.vector_mode}"
+    print(f"[설정] uri={args.milvus_uri}  col={col}", flush=True)
+    print(f"       replicas={args.replicas}  workers={args.workers}", flush=True)
+
+    from pymilvus import MilvusClient
+    client = MilvusClient(uri=args.milvus_uri, timeout=300)
+
+    if not client.has_collection(col):
+        print(f"[ERROR] 컬렉션 '{col}' 없음. 먼저 runner.py 로 baseline을 실행하세요.", flush=True)
+        raise SystemExit(1)
+
+    n_docs = int(client.get_collection_stats(col).get("row_count", 0))
+    print(f"[컬렉션] {col}  docs={n_docs:,}", flush=True)
+
+    # ── 쿼리 인코딩 (1회만) ────────────────────────────────────────────────
     print(f"[데이터] {args.data_root}")
+    _, queries, qrels = load_from_dir(args.data_root)
+    q_ids = list(queries.keys())
+    q_texts = [queries[qid] for qid in q_ids]
+    print(f"  queries={len(q_ids):,}", flush=True)
+
+    model = build_model(args.model, vector_mode=args.vector_mode, dtype="auto")
+    print("  query 인코딩 중...", flush=True)
     t0 = time.time()
-    docs, queries, qrels = load_from_dir(args.data_root)
-    task_names = [Path(args.data_root).name]
-    print(f"  로드 완료 ({time.time()-t0:.0f}s)  docs={len(docs):,}  queries={len(queries):,}",
-          flush=True)
+    q_embs = model.encode_queries(q_texts, args.batch_size)
+    print(f"  인코딩 완료 ({time.time()-t0:.1f}s)", flush=True)
+    del q_texts
+    gc.collect()
+    model.close()
 
-    print(f"[설정]  shards={args.num_shards}  replica={args.replica_number}"
-          f"  workers={args.search_workers}", flush=True)
-    print(f"  총 {len(args.num_shards)*len(args.replica_number)*len(args.search_workers)}개 조합",
-          flush=True)
+    # ── replica × workers 조합 측정 ────────────────────────────────────────
+    rows: list[dict] = []
 
-    all_results: list[dict] = []
-    for ns in args.num_shards:
-        for rn in args.replica_number:
-            for sw in args.search_workers:
-                result = run_scenario(
-                    uri=args.milvus_uri,
-                    model_id=args.model,
-                    vector_mode=args.vector_mode,
-                    model_dtype=args.model_dtype,
-                    batch_size=args.batch_size,
-                    docs=docs, queries=queries, qrels=qrels,
-                    task_names=task_names,
-                    num_shards=ns, replica_number=rn, search_workers=sw,
-                    out_dir=args.out,
-                )
-                all_results.append(result)
+    for replica in args.replicas:
+        print(f"\n[load] replica_number={replica}  ...", flush=True)
+        client.release_collection(col)
+        client.load_collection(col, replica_number=replica)
+        print(f"  load 완료", flush=True)
 
+        for workers in args.workers:
+            ckpt = os.path.join(args.out, f"{col}_r{replica}_w{workers}.json")
+            if os.path.exists(ckpt):
+                print(f"  [스킵] replica={replica} workers={workers} — 결과 존재", flush=True)
+                with open(ckpt, encoding="utf-8") as f:
+                    rows.append(json.load(f))
+                continue
+
+            print(f"  검색: replica={replica}  workers={workers} ...", flush=True)
+            raw, qps = run_search(client, col, q_embs, top_k=100,
+                                  vector_mode=args.vector_mode, num_workers=workers)
+
+            run = {q_ids[i]: {doc_id: score for doc_id, score in hits}
+                   for i, hits in enumerate(raw)}
+            metrics = evaluate(run, qrels)
+
+            result = {
+                "model":          args.model,
+                "vector_mode":    args.vector_mode,
+                "replica_number": replica,
+                "search_workers": workers,
+                "search_qps":     round(qps, 1),
+                "baseline_qps":   baseline_qps,
+                **metrics,
+            }
+            with open(ckpt, "w", encoding="utf-8") as f:
+                json.dump(result, f, ensure_ascii=False, indent=2)
+            rows.append(result)
+            print(f"    → {qps:.1f} q/s  NDCG@10={metrics.get('ndcg_at_10', 0):.4f}",
+                  flush=True)
+
+    # ── 요약 저장 + 비교 출력 ──────────────────────────────────────────────
     summary = os.path.join(args.out, "dist_summary.json")
     with open(summary, "w", encoding="utf-8") as f:
-        json.dump(all_results, f, ensure_ascii=False, indent=2)
+        json.dump(rows, f, ensure_ascii=False, indent=2)
 
-    _print_table(all_results)
+    _print_table(baseline_qps, rows)
     print(f"\n[저장] {summary}")
 
 
