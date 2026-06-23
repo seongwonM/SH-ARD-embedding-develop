@@ -97,10 +97,10 @@ etcd_embed  = {'endpoints': 'localhost:2379', 'use': {'embed': True},
 etcd_local  = {'endpoints': 'localhost:2379',       'use': {'embed': False}}
 etcd_remote = {'endpoints': f'{primary_addr}:2379', 'use': {'embed': False}}
 
-if mode == 'standalone':
+if mode in ('standalone', 'coordinator'):
+    # coordinator도 milvus run standalone으로 실행 — embedded etcd는 standalone만 지원
+    # 워커 pod들이 추가 querynode/datanode를 등록하면 QueryCoord가 자동으로 활용
     components = {'standalone': etcd_embed}
-elif mode == 'coordinator':
-    components = {'mixcoord': etcd_embed, 'streamingnode': etcd_local, 'proxy': etcd_local}
 else:
     components = {'datanode': etcd_remote, 'querynode': etcd_remote}
 
@@ -131,48 +131,40 @@ PYEOF2
 fi
 
 # ── Milvus 실행 ───────────────────────────────────────────────────────────────
-if [ "$_MODE" = "standalone" ]; then
+if [ "$_MODE" = "standalone" ] || [ "$_MODE" = "coordinator" ]; then
     MILVUSCONF=/tmp/milvuscfg_dist/standalone \
     ETCD_DATA_DIR="${MILVUS_DATA}/etcd" \
     DEPLOY_MODE=STANDALONE \
         milvus run standalone >"${MILVUS_DATA}/milvus.log" 2>&1 &
     MILVUS_PID=$!
-    for _i in $(seq 1 90); do
-        ! kill -0 "$MILVUS_PID" 2>/dev/null && cat "${MILVUS_DATA}/milvus.log" && sleep infinity
-        curl -sf http://localhost:9091/healthz >/dev/null 2>&1 && break || sleep 2
-    done
-    echo "[milvus] standalone 준비 완료"
-
-elif [ "$_MODE" = "coordinator" ]; then
-    MILVUSCONF=/tmp/milvuscfg_dist/mixcoord \
-    ETCD_DATA_DIR="${MILVUS_DATA}/etcd" \
-        milvus run mixcoord >"${MILVUS_DATA}/mixcoord.log" 2>&1 &
-
-    for _i in $(seq 1 60); do nc -z localhost 2379 2>/dev/null && break || sleep 2; done
-
-    MILVUSCONF=/tmp/milvuscfg_dist/streamingnode \
-        milvus run streamingnode >"${MILVUS_DATA}/streamingnode.log" 2>&1 &
-    MILVUSCONF=/tmp/milvuscfg_dist/proxy \
-        milvus run proxy >"${MILVUS_DATA}/proxy.log" 2>&1 &
 
     for _i in $(seq 1 120); do
+        if ! kill -0 "$MILVUS_PID" 2>/dev/null; then
+            echo "[ERROR] milvus 프로세스 종료됨. 로그:"
+            cat "${MILVUS_DATA}/milvus.log"
+            sleep infinity
+        fi
         curl -sf http://localhost:9091/healthz >/dev/null 2>&1 && break || sleep 3
     done
-    echo "[milvus] coordinator 준비 완료"
-    echo "[milvus] worker 등록 대기 ${WORKER_WAIT_SEC:-30}초..."
-    sleep "${WORKER_WAIT_SEC:-30}"
+    echo "[milvus] 준비 완료 (모드: ${_MODE})"
+
+    if [ "$_MODE" = "coordinator" ]; then
+        echo "[milvus] worker QueryNode 등록 대기 ${WORKER_WAIT_SEC:-30}초..."
+        sleep "${WORKER_WAIT_SEC:-30}"
+    fi
 
 else
-    echo "[worker] coordinator etcd 대기 (${_PRIMARY_ADDR}:2379)..."
-    until nc -z "${_PRIMARY_ADDR}" 2379 2>/dev/null; do sleep 5; done
-    sleep 15
+    # worker: coordinator healthz 대기 (nc 대신 curl 사용)
+    echo "[worker] coordinator 대기 (http://${_PRIMARY_ADDR}:9091/healthz)..."
+    until curl -sf "http://${_PRIMARY_ADDR}:9091/healthz" >/dev/null 2>&1; do sleep 5; done
+    sleep 10
 
-    MILVUSCONF=/tmp/milvuscfg_dist/datanode \
-        milvus run datanode >"${MILVUS_DATA}/datanode_rank${_NODE_RANK}.log" 2>&1 &
     MILVUSCONF=/tmp/milvuscfg_dist/querynode \
         milvus run querynode >"${MILVUS_DATA}/querynode_rank${_NODE_RANK}.log" 2>&1 &
+    MILVUSCONF=/tmp/milvuscfg_dist/datanode \
+        milvus run datanode >"${MILVUS_DATA}/datanode_rank${_NODE_RANK}.log" 2>&1 &
 
-    echo "[worker] datanode + querynode 시작 (rank=${_NODE_RANK})"
+    echo "[worker] querynode + datanode 시작 (rank=${_NODE_RANK})"
     sleep infinity
 fi
 
