@@ -142,6 +142,7 @@ class MilvusStore:
 
         for start in range(0, n, CHUNK):
             end = min(start + CHUNK, n)
+            batch_idx = start // CHUNK
 
             if vector_mode == "colbert":
                 from pymilvus.client.embedding_list import EmbeddingList
@@ -151,6 +152,7 @@ class MilvusStore:
                     for token_vec in vectors[i]:
                         emb_list.add(token_vec.tolist())
                     data.append(emb_list)
+                print(f"  검색 배치 {batch_idx+1}/{n_batches} gRPC 전송 중...", flush=True)
                 results = self._client.search(
                     collection_name=name,
                     data=data,
@@ -158,6 +160,7 @@ class MilvusStore:
                     search_params={"metric_type": "MAX_SIM_COSINE"},
                     limit=top_k,
                     output_fields=["doc_id"],
+                    timeout=120,
                 )
             elif vector_mode == "sparse":
                 query_data = [
@@ -186,7 +189,6 @@ class MilvusStore:
             for hits in results:
                 all_results.append([(h["entity"]["doc_id"], h["distance"]) for h in hits])
 
-            batch_idx = start // CHUNK
             if (batch_idx + 1) % log_every == 0 or end == n:
                 elapsed = time.time() - t0
                 qps = end / elapsed if elapsed > 0 else 0
