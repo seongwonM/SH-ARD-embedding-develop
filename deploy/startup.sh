@@ -1,6 +1,9 @@
 #!/bin/bash
 set -euo pipefail
 
+# 분산처리 테스트 모드: DIST_TEST=1 이면 startup_dist.sh 로 위임
+[ "${DIST_TEST:-0}" = "1" ] && exec /bin/bash /startup_dist.sh
+
 REPO=https://github.com/seongwonM/SH-ARD-embedding-develop.git
 if [ -n "${GH_TOKEN:-}" ]; then
     TARGET="https://${GH_TOKEN}@github.com/seongwonM/SH-ARD-embedding-develop.git"
