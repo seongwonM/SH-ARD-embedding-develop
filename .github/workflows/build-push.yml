@@ -41,6 +41,7 @@ jobs:
           file: deploy/Dockerfile
           push: true
           tags: ${{ steps.meta.outputs.image }}
+          provenance: false
 
       # RunPod pod 재시작 (RUNPOD_API_KEY, RUNPOD_POD_ID secret 등록 시 자동 실행)
       - name: Restart RunPod pod
