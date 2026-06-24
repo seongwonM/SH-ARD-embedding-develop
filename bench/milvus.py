@@ -175,7 +175,7 @@ class MilvusStore:
                     search_params={"metric_type": "MAX_SIM_COSINE"},
                     limit=top_k,
                     output_fields=["doc_id"],
-                    timeout=120,
+                    timeout=600,
                 )
             elif vector_mode == "sparse":
                 query_data = [
