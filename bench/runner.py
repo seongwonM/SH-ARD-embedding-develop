@@ -190,6 +190,13 @@ def run_model(
         f"Recall@10={metrics.get('recall_at_10')}  @50={metrics.get('recall_at_50')}  @100={metrics.get('recall_at_100')}"
     )
 
+    try:
+        import torch
+        gpu_info = [torch.cuda.get_device_name(i)
+                    for i in range(torch.cuda.device_count())] if torch.cuda.is_available() else []
+    except Exception:
+        gpu_info = []
+
     return {
         "model":              model_id,
         "vector_mode":        vector_mode,
@@ -197,6 +204,7 @@ def run_model(
         "batch_size":         batch_size,
         "model_dtype":        model_dtype,
         "model_dtype_actual": getattr(model, "actual_dtype", "unknown"),
+        "gpu_info":           gpu_info,
         # ── 성능 지표 ──────────────────────────────
         "model_load_sec":       model_load_sec,
         "index_build_sec":      index_build_sec,

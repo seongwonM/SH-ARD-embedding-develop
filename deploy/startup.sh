@@ -28,6 +28,9 @@ DB_SUFFIX="_${VECTOR_DB}"
 # Instant Cluster에서 NODE_RANK가 주입되면 각 pod이 독립 경로 사용 (NFS 충돌 방지)
 # DIST_TEST 없이도 multi-pod 병렬 벤치마크 가능
 _RANK_SUFFIX="${NODE_RANK:+_rank${NODE_RANK}}"
+_GPU_RAW=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1)
+_GPU_SAFE=$(echo "$_GPU_RAW" | sed 's/NVIDIA //g; s/Tesla //g' | tr ' ' '_' | tr -cd 'a-zA-Z0-9_' | cut -c1-20)
+_GPU_SUFFIX="${_GPU_SAFE:+_${_GPU_SAFE}}"
 REPORTS_PATH="/workspace/reports/${MODEL_SAFE:-all}${MODE_SUFFIX:-}${DB_SUFFIX}${_RANK_SUFFIX}"
 
 if [ "$VECTOR_DB" = "milvus" ]; then
@@ -193,7 +196,7 @@ if [ -n "${GH_TOKEN:-}" ]; then
         git config user.email 'pod@runpod.io'
         git config user.name 'RunPod'
         mkdir -p results
-        cp "$RESULT_FILE" "results/${MODEL_SAFE:-all}${MODE_SUFFIX:-}${DB_SUFFIX}${_RANK_SUFFIX}_$(date +%Y%m%d_%H%M%S).json"
+        cp "$RESULT_FILE" "results/${MODEL_SAFE:-all}${MODE_SUFFIX:-}${DB_SUFFIX}${_RANK_SUFFIX}${_GPU_SUFFIX}_$(date +%Y%m%d_%H%M%S).json"
         echo "[git] 결과 파일 복사 완료"
         git add results/
         if git diff --cached --quiet; then
