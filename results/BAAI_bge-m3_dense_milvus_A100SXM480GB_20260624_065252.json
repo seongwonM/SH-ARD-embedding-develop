@@ -1,0 +1,38 @@
+[
+  {
+    "model": "BAAI/bge-m3",
+    "vector_mode": "dense",
+    "datasets": [
+      "data"
+    ],
+    "batch_size": 16,
+    "model_dtype": "auto",
+    "model_dtype_actual": "float32",
+    "gpu_info": [
+      "NVIDIA A100-SXM4-80GB"
+    ],
+    "model_load_sec": 21.46,
+    "index_build_sec": 517.29,
+    "index_docs_per_sec": 125.8,
+    "query_encode_sec": 16.52,
+    "query_encode_qps": 774.9,
+    "search_sec": 10.17,
+    "search_qps": 1258.8,
+    "concurrent": {},
+    "ndcg_at_10": 0.8913,
+    "ndcg_at_20": 0.8944,
+    "ndcg_at_50": 0.8961,
+    "ndcg_at_100": 0.8965,
+    "mrr_at_10": 0.8768,
+    "recall_at_1": 0.8091,
+    "recall_at_5": 0.9302,
+    "recall_at_10": 0.9498,
+    "recall_at_20": 0.9602,
+    "recall_at_50": 0.9674,
+    "recall_at_100": 0.97,
+    "map_at_10": 0.8691,
+    "map_at_20": 0.8704,
+    "map_at_50": 0.8708,
+    "map_at_100": 0.8708
+  }
+]
