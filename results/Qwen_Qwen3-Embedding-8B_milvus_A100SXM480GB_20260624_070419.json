@@ -1,0 +1,38 @@
+[
+  {
+    "model": "Qwen/Qwen3-Embedding-8B",
+    "vector_mode": "dense",
+    "datasets": [
+      "data"
+    ],
+    "batch_size": 16,
+    "model_dtype": "auto",
+    "model_dtype_actual": "bfloat16",
+    "gpu_info": [
+      "NVIDIA A100-SXM4-80GB"
+    ],
+    "model_load_sec": 35.76,
+    "index_build_sec": 1023.07,
+    "index_docs_per_sec": 63.6,
+    "query_encode_sec": 51.02,
+    "query_encode_qps": 250.9,
+    "search_sec": 18.36,
+    "search_qps": 697.3,
+    "concurrent": {},
+    "ndcg_at_10": 0.8945,
+    "ndcg_at_20": 0.8984,
+    "ndcg_at_50": 0.9002,
+    "ndcg_at_100": 0.9007,
+    "mrr_at_10": 0.8801,
+    "recall_at_1": 0.8124,
+    "recall_at_5": 0.9304,
+    "recall_at_10": 0.9506,
+    "recall_at_20": 0.9651,
+    "recall_at_50": 0.9729,
+    "recall_at_100": 0.9757,
+    "map_at_10": 0.8733,
+    "map_at_20": 0.8748,
+    "map_at_50": 0.8752,
+    "map_at_100": 0.8752
+  }
+]
