@@ -1,0 +1,38 @@
+[
+  {
+    "model": "BAAI/bge-m3",
+    "vector_mode": "dense",
+    "datasets": [
+      "data"
+    ],
+    "batch_size": 16,
+    "model_dtype": "auto",
+    "model_dtype_actual": "float32",
+    "gpu_info": [
+      "NVIDIA L40S"
+    ],
+    "model_load_sec": 17.25,
+    "index_build_sec": 326.33,
+    "index_docs_per_sec": 199.5,
+    "query_encode_sec": 9.57,
+    "query_encode_qps": 1337.7,
+    "search_sec": 10.13,
+    "search_qps": 1263.8,
+    "concurrent": {},
+    "ndcg_at_10": 0.9048,
+    "ndcg_at_20": 0.9079,
+    "ndcg_at_50": 0.9095,
+    "ndcg_at_100": 0.9101,
+    "mrr_at_10": 0.8897,
+    "recall_at_1": 0.8206,
+    "recall_at_5": 0.9451,
+    "recall_at_10": 0.9651,
+    "recall_at_20": 0.9757,
+    "recall_at_50": 0.9827,
+    "recall_at_100": 0.9857,
+    "map_at_10": 0.882,
+    "map_at_20": 0.8833,
+    "map_at_50": 0.8837,
+    "map_at_100": 0.8837
+  }
+]
