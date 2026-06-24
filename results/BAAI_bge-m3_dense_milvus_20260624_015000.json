@@ -1,0 +1,34 @@
+[
+  {
+    "model": "BAAI/bge-m3",
+    "vector_mode": "dense",
+    "datasets": [
+      "data"
+    ],
+    "batch_size": 16,
+    "model_dtype": "auto",
+    "model_load_sec": 578.25,
+    "index_build_sec": 513.18,
+    "index_docs_per_sec": 126.8,
+    "query_encode_sec": 16.38,
+    "query_encode_qps": 781.6,
+    "search_sec": 13.4,
+    "search_qps": 955.4,
+    "concurrent": {},
+    "ndcg_at_10": 0.8141,
+    "ndcg_at_20": 0.8168,
+    "ndcg_at_50": 0.8182,
+    "ndcg_at_100": 0.8187,
+    "mrr_at_10": 0.8017,
+    "recall_at_1": 0.7386,
+    "recall_at_5": 0.8484,
+    "recall_at_10": 0.8659,
+    "recall_at_20": 0.8749,
+    "recall_at_50": 0.8811,
+    "recall_at_100": 0.8835,
+    "map_at_10": 0.7941,
+    "map_at_20": 0.7952,
+    "map_at_50": 0.7956,
+    "map_at_100": 0.7956
+  }
+]
