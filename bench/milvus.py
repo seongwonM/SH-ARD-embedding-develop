@@ -89,8 +89,15 @@ class MilvusStore:
 
     def upload_stream(self, name: str, data_iter, vector_mode: str = "dense") -> None:
         import time
+        # ColBERT: 토큰 임베딩이 크므로 배치 작게, 2000건마다 강제 flush로 서버 OOM 방지
+        insert_batch = 16 if vector_mode == "colbert" else _INSERT_BATCH
+        flush_every = _ENCODE_CHUNK  # 2000건마다
+
         print("  [upload] insert 시작...", flush=True)
         batch: list[dict] = []
+        total_inserted = 0
+        next_flush_at = flush_every
+
         for pid, doc_id, vec in data_iter:
             if vector_mode == "colbert":
                 row = {
@@ -107,7 +114,7 @@ class MilvusStore:
             else:
                 row = {"id": pid, "doc_id": doc_id, "vector": vec.tolist()}
             batch.append(row)
-            if len(batch) >= _INSERT_BATCH:
+            if len(batch) >= insert_batch:
                 for attempt in range(3):
                     try:
                         self._client.insert(collection_name=name, data=batch)
@@ -116,10 +123,17 @@ class MilvusStore:
                         if attempt == 2:
                             raise
                         time.sleep(2 ** attempt)
+                total_inserted += len(batch)
                 batch.clear()
+                # ColBERT는 벡터가 커서 Milvus growing segment가 RAM을 빠르게 소진 → 강제 flush
+                if vector_mode == "colbert" and total_inserted >= next_flush_at:
+                    print(f"  [upload] flush ({total_inserted:,}건)...", flush=True)
+                    self._client.flush(collection_name=name)
+                    next_flush_at += flush_every
+
         if batch:
             self._client.insert(collection_name=name, data=batch)
-        print("  [upload] insert 완료", flush=True)
+        print(f"  [upload] insert 완료 ({total_inserted + len(batch):,}건)", flush=True)
 
     def finalize_index(self, name: str, vector_mode: str = "dense") -> None:
         self._client.load_collection(name)
