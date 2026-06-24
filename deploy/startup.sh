@@ -107,31 +107,48 @@ PYEOF
     # MILVUSCONF: initConfPath()가 CWD+/configs를 찾는데 /app/configs 없음 → yaml 미로드
     #   → MILVUSCONF로 명시해야 /etc/milvus/configs/milvus.yaml을 읽음
     # ETCD_DATA_DIR: DEB yaml의 etcd.data.data.dir 키 버그 우회 (코드는 etcd.data.dir 읽음)
-    MILVUSCONF=/etc/milvus/configs \
-    ETCD_DATA_DIR="${MILVUS_DATA}/etcd" \
-    DEPLOY_MODE=STANDALONE \
-    milvus run standalone >"${MILVUS_DATA}/milvus.log" 2>&1 &
-    MILVUS_PID=$!
-    echo "[milvus] 서버 시작 (PID=$MILVUS_PID, log=${MILVUS_DATA}/milvus.log), 준비 대기 중..."
+    # 재시도 최대 3회: etcd WAL 부패로 "leader changed" 패닉 발생 시 etcd 초기화 후 재시도
+    _milvus_started=0
+    for _milvus_try in 1 2 3; do
+        MILVUSCONF=/etc/milvus/configs \
+        ETCD_DATA_DIR="${MILVUS_DATA}/etcd" \
+        DEPLOY_MODE=STANDALONE \
+        milvus run standalone >"${MILVUS_DATA}/milvus.log" 2>&1 &
+        MILVUS_PID=$!
+        echo "[milvus] 서버 시작 (시도 $_milvus_try/3, PID=$MILVUS_PID, log=${MILVUS_DATA}/milvus.log)..."
 
-    # 프로세스 생존 확인하며 헬스체크 (크래시 시 로그 앞부분 + 뒷부분 출력)
-    _milvus_ok=0
-    for _i in $(seq 1 90); do
-        if ! kill -0 "$MILVUS_PID" 2>/dev/null; then
-            echo "[milvus] 프로세스 비정상 종료!"
-            echo "=== milvus.log 전체 ($(wc -l < "${MILVUS_DATA}/milvus.log" 2>/dev/null || echo '?')줄) ==="
-            cat "${MILVUS_DATA}/milvus.log" || true
-            sleep infinity
-        fi
-        if curl -sf http://localhost:9091/healthz >/dev/null 2>&1; then
-            _milvus_ok=1
+        _milvus_ok=0
+        _milvus_died=0
+        for _i in $(seq 1 90); do
+            if ! kill -0 "$MILVUS_PID" 2>/dev/null; then
+                _milvus_died=1
+                break
+            fi
+            if curl -sf http://localhost:9091/healthz >/dev/null 2>&1; then
+                _milvus_ok=1
+                break
+            fi
+            sleep 2
+        done
+
+        if [ "$_milvus_ok" -eq 1 ]; then
+            _milvus_started=1
             break
         fi
-        sleep 2
+
+        echo "[milvus] 시도 $_milvus_try 실패 (died=$_milvus_died)"
+        echo "=== milvus.log 마지막 50줄 ==="
+        tail -50 "${MILVUS_DATA}/milvus.log" || true
+        if [ "$_milvus_try" -lt 3 ]; then
+            echo "[milvus] etcd WAL 초기화 후 재시도 (재기동 시 컬렉션 재색인 필요)..."
+            rm -rf "${MILVUS_DATA}/etcd"
+            mkdir -p "${MILVUS_DATA}/etcd"
+            sleep 3
+        fi
     done
-    if [ "$_milvus_ok" -eq 0 ]; then
-        echo "[milvus] 헬스체크 타임아웃!"
-        echo "=== milvus.log 전체 ($(wc -l < "${MILVUS_DATA}/milvus.log" 2>/dev/null || echo '?')줄) ==="
+
+    if [ "$_milvus_started" -eq 0 ]; then
+        echo "[milvus] 최종 실패 — 전체 로그:"
         cat "${MILVUS_DATA}/milvus.log" || true
         sleep infinity
     fi

@@ -147,7 +147,8 @@ class MilvusStore:
         vector_mode: str = "dense",
     ) -> list[list[tuple[str, float]]]:
         import time
-        CHUNK = 16 if vector_mode == "colbert" else 256
+        # ColBERT MaxSim 배치 16 → 1: 배치 크기가 크면 Milvus 서버가 38s 내에 죽음 (Socket closed)
+        CHUNK = 1 if vector_mode == "colbert" else 256
         n = len(vectors)
         all_results: list[list[tuple[str, float]]] = []
         n_batches = (n + CHUNK - 1) // CHUNK
