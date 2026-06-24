@@ -72,6 +72,12 @@ class EmbeddingModel:
         if model_id in _FLASH_ATTN_MODELS and hasattr(self._model, "tokenizer"):
             self._model.tokenizer.padding_side = "left"
 
+        try:
+            _actual_dtype = next(self._model.parameters()).dtype
+            print(f"  [모델 dtype] 요청={dtype!r} → 실제={_actual_dtype}", flush=True)
+        except StopIteration:
+            pass
+
         self._dim: int = self._model.encode(["dim probe"], show_progress_bar=False).shape[1]
 
     @property
@@ -144,6 +150,7 @@ class BGEM3Model:
         print(f"[BGEM3] devices: {devices}", flush=True)
 
         self._model = BGEM3FlagModel(_BGE_M3_ID, use_fp16=use_fp16, devices=devices)
+        print(f"  [모델 dtype] 요청={dtype!r} → use_fp16={use_fp16}", flush=True)
 
         self._dim = 1024  # dense 및 colbert 토큰 차원
 
