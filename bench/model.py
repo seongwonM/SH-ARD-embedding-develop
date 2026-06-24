@@ -72,8 +72,10 @@ class EmbeddingModel:
         if model_id in _FLASH_ATTN_MODELS and hasattr(self._model, "tokenizer"):
             self._model.tokenizer.padding_side = "left"
 
+        self._actual_dtype: str = "unknown"
         try:
             _actual_dtype = next(self._model.parameters()).dtype
+            self._actual_dtype = str(_actual_dtype).replace("torch.", "")
             print(f"  [모델 dtype] 요청={dtype!r} → 실제={_actual_dtype}", flush=True)
         except StopIteration:
             pass
@@ -83,6 +85,10 @@ class EmbeddingModel:
     @property
     def dim(self) -> int:
         return self._dim
+
+    @property
+    def actual_dtype(self) -> str:
+        return self._actual_dtype
 
     def _encode_multi_gpu(self, texts: list[str], batch_size: int,
                           normalize: bool = True, prompt_name: str | None = None) -> np.ndarray:
@@ -150,6 +156,7 @@ class BGEM3Model:
         print(f"[BGEM3] devices: {devices}", flush=True)
 
         self._model = BGEM3FlagModel(_BGE_M3_ID, use_fp16=use_fp16, devices=devices)
+        self._actual_dtype = "float16" if use_fp16 else "float32"
         print(f"  [모델 dtype] 요청={dtype!r} → use_fp16={use_fp16}", flush=True)
 
         self._dim = 1024  # dense 및 colbert 토큰 차원
@@ -157,6 +164,10 @@ class BGEM3Model:
     @property
     def dim(self) -> int:
         return self._dim
+
+    @property
+    def actual_dtype(self) -> str:
+        return self._actual_dtype
 
     def _encode(self, texts: list[str], batch_size: int):
         import contextlib, io

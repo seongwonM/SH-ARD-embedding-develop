@@ -191,11 +191,12 @@ def run_model(
     )
 
     return {
-        "model":        model_id,
-        "vector_mode":  vector_mode,
-        "datasets":     task_names,
-        "batch_size":   batch_size,
-        "model_dtype":  model_dtype,
+        "model":              model_id,
+        "vector_mode":        vector_mode,
+        "datasets":           task_names,
+        "batch_size":         batch_size,
+        "model_dtype":        model_dtype,
+        "model_dtype_actual": getattr(model, "actual_dtype", "unknown"),
         # ── 성능 지표 ──────────────────────────────
         "model_load_sec":       model_load_sec,
         "index_build_sec":      index_build_sec,
