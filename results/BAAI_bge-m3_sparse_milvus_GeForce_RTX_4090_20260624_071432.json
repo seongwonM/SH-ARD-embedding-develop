@@ -1,0 +1,38 @@
+[
+  {
+    "model": "BAAI/bge-m3",
+    "vector_mode": "sparse",
+    "datasets": [
+      "data"
+    ],
+    "batch_size": 16,
+    "model_dtype": "auto",
+    "model_dtype_actual": "float16",
+    "gpu_info": [
+      "NVIDIA GeForce RTX 4090"
+    ],
+    "model_load_sec": 23.16,
+    "index_build_sec": 118.63,
+    "index_docs_per_sec": 548.7,
+    "query_encode_sec": 10.48,
+    "query_encode_qps": 1221.6,
+    "search_sec": 6.94,
+    "search_qps": 1844.7,
+    "concurrent": {},
+    "ndcg_at_10": 0.7937,
+    "ndcg_at_20": 0.8018,
+    "ndcg_at_50": 0.8071,
+    "ndcg_at_100": 0.8094,
+    "mrr_at_10": 0.7715,
+    "recall_at_1": 0.6953,
+    "recall_at_5": 0.8411,
+    "recall_at_10": 0.88,
+    "recall_at_20": 0.9103,
+    "recall_at_50": 0.9354,
+    "recall_at_100": 0.9485,
+    "map_at_10": 0.7627,
+    "map_at_20": 0.7653,
+    "map_at_50": 0.7663,
+    "map_at_100": 0.7665
+  }
+]
