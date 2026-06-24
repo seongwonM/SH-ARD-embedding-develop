@@ -1,0 +1,38 @@
+[
+  {
+    "model": "Qwen/Qwen3-Embedding-0.6B",
+    "vector_mode": "dense",
+    "datasets": [
+      "data"
+    ],
+    "batch_size": 16,
+    "model_dtype": "auto",
+    "model_dtype_actual": "bfloat16",
+    "gpu_info": [
+      "NVIDIA L40S"
+    ],
+    "model_load_sec": 21.02,
+    "index_build_sec": 186.13,
+    "index_docs_per_sec": 349.7,
+    "query_encode_sec": 17.99,
+    "query_encode_qps": 711.6,
+    "search_sec": 8.41,
+    "search_qps": 1522.2,
+    "concurrent": {},
+    "ndcg_at_10": 0.8401,
+    "ndcg_at_20": 0.8452,
+    "ndcg_at_50": 0.8493,
+    "ndcg_at_100": 0.8508,
+    "mrr_at_10": 0.8217,
+    "recall_at_1": 0.7499,
+    "recall_at_5": 0.8804,
+    "recall_at_10": 0.9126,
+    "recall_at_20": 0.9314,
+    "recall_at_50": 0.9506,
+    "recall_at_100": 0.9589,
+    "map_at_10": 0.8136,
+    "map_at_20": 0.8152,
+    "map_at_50": 0.8161,
+    "map_at_100": 0.8163
+  }
+]
