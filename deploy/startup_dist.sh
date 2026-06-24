@@ -125,23 +125,47 @@ print(f'[milvus] embedEtcd 외부 접근 활성화 ({node_addr}:2379)')
 PYEOF2
 fi
 
-# ── Milvus 실행 ───────────────────────────────────────────────────────────────
+# ── Milvus 실행 (최대 3회 재시도 — etcd WAL 부패 시 초기화 후 재시도) ─────────
 if [ "$_MODE" = "standalone" ] || [ "$_MODE" = "coordinator" ]; then
-    # startup.sh 와 동일한 방식: MILVUSCONF=/etc/milvus/configs
-    MILVUSCONF=/etc/milvus/configs \
-    ETCD_DATA_DIR="${MILVUS_DATA}/etcd" \
-    DEPLOY_MODE=STANDALONE \
-        milvus run standalone >"${MILVUS_DATA}/milvus.log" 2>&1 &
-    MILVUS_PID=$!
+    _milvus_started=0
+    for _milvus_try in 1 2 3; do
+        MILVUSCONF=/etc/milvus/configs \
+        ETCD_DATA_DIR="${MILVUS_DATA}/etcd" \
+        DEPLOY_MODE=STANDALONE \
+            milvus run standalone >"${MILVUS_DATA}/milvus.log" 2>&1 &
+        MILVUS_PID=$!
+        echo "[milvus] 서버 시작 (시도 $_milvus_try/3, PID=$MILVUS_PID)..."
 
-    for _i in $(seq 1 120); do
-        if ! kill -0 "$MILVUS_PID" 2>/dev/null; then
-            echo "[ERROR] milvus 프로세스 종료됨. 로그:"
-            cat "${MILVUS_DATA}/milvus.log"
-            sleep infinity
+        _milvus_ok=0
+        _milvus_died=0
+        for _i in $(seq 1 120); do
+            if ! kill -0 "$MILVUS_PID" 2>/dev/null; then
+                _milvus_died=1
+                break
+            fi
+            curl -sf http://localhost:9091/healthz >/dev/null 2>&1 && { _milvus_ok=1; break; } || sleep 3
+        done
+
+        if [ "$_milvus_ok" -eq 1 ]; then
+            _milvus_started=1
+            break
         fi
-        curl -sf http://localhost:9091/healthz >/dev/null 2>&1 && break || sleep 3
+
+        echo "[milvus] 시도 $_milvus_try 실패 (died=$_milvus_died)"
+        tail -50 "${MILVUS_DATA}/milvus.log" || true
+        if [ "$_milvus_try" -lt 3 ]; then
+            echo "[milvus] etcd WAL 초기화 후 재시도..."
+            rm -rf "${MILVUS_DATA}/etcd"
+            mkdir -p "${MILVUS_DATA}/etcd"
+            sleep 3
+        fi
     done
+
+    if [ "$_milvus_started" -eq 0 ]; then
+        echo "[milvus] 최종 실패 — 전체 로그:"
+        cat "${MILVUS_DATA}/milvus.log" || true
+        sleep infinity
+    fi
     echo "[milvus] 준비 완료 (모드: ${_MODE})"
 
     if [ "$_MODE" = "coordinator" ]; then

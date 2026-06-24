@@ -33,8 +33,8 @@ from pathlib import Path
 
 from bench.data_loader import load_from_dir
 from bench.evaluator import evaluate
+from bench.milvus import MilvusStore, index_docs as _milvus_index_docs
 from bench.model import build_model
-from bench.milvus import MilvusStore
 
 
 _GH_REPO = "seongwonM/SH-ARD-embedding-develop"
@@ -185,9 +185,15 @@ def main() -> None:
     store = MilvusStore(uri=args.milvus_uri)
 
     if not store.has_collection(col):
-        print(f"[ERROR] 컬렉션 '{col}' 없음. 먼저 runner.py 로 baseline을 실행하세요.",
-              flush=True)
-        raise SystemExit(1)
+        print(f"[인덱싱] 컬렉션 '{col}' 없음 — 자동 인덱싱 시작...", flush=True)
+        combined_docs, _, _ = load_from_dir(args.data_root)
+        idx_model = build_model(args.model, vector_mode=args.vector_mode, dtype="auto")
+        t0 = time.time()
+        _milvus_index_docs(store, col, idx_model, combined_docs, args.batch_size)
+        print(f"[인덱싱] 완료 ({time.time()-t0:.0f}s)", flush=True)
+        idx_model.close()
+        del combined_docs
+        gc.collect()
 
     print(f"[컬렉션] {col}  docs={store.collection_size(col):,}", flush=True)
 
