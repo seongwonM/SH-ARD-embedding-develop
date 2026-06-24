@@ -1,169 +1,200 @@
 """
-Milvus 분산처리 QPS 비교 테스트.
+Milvus 분산처리 concurrent QPS 비교 테스트 (VDBBench 방식).
 
-bench/runner.py 가 만든 컬렉션을 재사용하고
-replica_number × search_workers 조합별 search QPS를 측정해서
-Standalone 기준값과 비교한다.
+replica_number × concurrent_workers 조합별로 search_concurrent()를 실행해
+지속 부하(sustained load) 하에서의 QPS / p50 / p95 / p99를 측정한다.
 
-사용법 (RunPod coordinator 또는 standalone pod):
+측정 방법론:
+  - 각 worker 스레드가 독립 커넥션으로 1개짜리 쿼리를 duration 초 동안 반복 전송
+  - replica 효과는 높은 concurrency에서 뚜렷하게 나타남
+    (replica=1→2 @ workers=8: 이론상 ~2×  QPS 향상, 레이턴시 감소)
+
+사용법:
   python -m bench.dist_bench \\
     --model BAAI/bge-m3 \\
     --replicas 1 2 \\
-    --workers 1 2 4
+    --workers 1 2 4 8 \\
+    --duration 30
 
-환경변수로도 지정 가능 (startup_dist.sh가 자동 전달):
-  MODEL_ID, VECTOR_MODE, MILVUS_URI, DATA_ROOT
+환경변수 (startup_dist.sh 자동 전달):
+  MODEL_ID, VECTOR_MODE, MILVUS_URI, DATA_ROOT, SEARCH_DURATION
 """
 from __future__ import annotations
 
 import argparse
 import gc
 import json
-import math
 import os
 import re
 import time
-from concurrent.futures import ThreadPoolExecutor
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 from bench.data_loader import load_from_dir
 from bench.evaluator import evaluate
 from bench.model import build_model
+from bench.milvus import MilvusStore
+
+
+_GH_REPO = "seongwonM/SH-ARD-embedding-develop"
 
 
 def _safe_name(model_id: str) -> str:
     return re.sub(r"[^a-z0-9_]", "_", model_id.lower())[:200]
 
 
-# ── runner.py 와 동일한 검색 파라미터 ─────────────────────────────────────────
+def _fetch_baseline_from_github(model_id: str, vector_mode: str) -> float | None:
+    """GitHub results/에서 가장 최근 Milvus rank0 결과를 내려받아 search_qps 반환.
 
-def _search_chunk(client, col: str, vectors, s: int, e: int,
-                  top_k: int, vector_mode: str) -> list:
-    """vectors[s:e] 순차 검색 — runner.py 와 동일한 파라미터."""
-    CHUNK = 16 if vector_mode == "colbert" else 256
-    out: list = []
-    for start in range(s, e, CHUNK):
-        end = min(start + CHUNK, e)
-        if vector_mode == "colbert":
-            from pymilvus.client.embedding_list import EmbeddingList
-            data = []
-            for i in range(start, end):
-                el = EmbeddingList()
-                for tv in vectors[i]:
-                    el.add(tv.tolist())
-                data.append(el)
-            res = client.search(col, data, anns_field="colbert_embs[emb]",
-                                search_params={"metric_type": "MAX_SIM_COSINE"},
-                                limit=top_k, output_fields=["doc_id"], timeout=120)
-        elif vector_mode == "sparse":
-            data = [{int(k): float(v) for k, v in vectors[i].items()} for i in range(start, end)]
-            res = client.search(col, data, anns_field="vector",
-                                search_params={"metric_type": "IP", "params": {}},
-                                limit=top_k, output_fields=["doc_id"])
-        else:
-            data = [vectors[i].tolist() for i in range(start, end)]
-            res = client.search(col, data, anns_field="vector",
-                                search_params={"metric_type": "COSINE", "params": {"ef": 100}},
-                                limit=top_k, output_fields=["doc_id"])
-        for hits in res:
-            out.append([(h["entity"]["doc_id"], h["distance"]) for h in hits])
-    return out
+    네이밍 룰 (startup.sh 기준):
+      {model_safe}_{vector_mode}_milvus_rank0_{YYYYMMDD_HHMMSS}.json  ← 우선
+      {model_safe}_{vector_mode}_milvus_{YYYYMMDD_HHMMSS}.json        ← fallback (standalone)
+    """
+    api_url = f"https://api.github.com/repos/{_GH_REPO}/contents/results"
+    gh_token = os.getenv("GH_TOKEN")
 
+    headers: dict[str, str] = {
+        "Accept": "application/vnd.github.v3+json",
+        "User-Agent": "embedding-bench",
+    }
+    if gh_token:
+        headers["Authorization"] = f"token {gh_token}"
 
-def run_search(client, col: str, vectors, top_k: int,
-               vector_mode: str, num_workers: int) -> tuple[list, float]:
-    """num_workers 개 스레드로 동시 검색, (results, qps) 반환."""
-    n = len(vectors)
-    t0 = time.time()
+    req = urllib.request.Request(api_url, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            entries = json.loads(resp.read())
+    except urllib.error.URLError as e:
+        print(f"[baseline] GitHub API 접근 실패: {e}", flush=True)
+        return None
 
-    if num_workers <= 1:
-        results = _search_chunk(client, col, vectors, 0, n, top_k, vector_mode)
-    else:
-        chunk = math.ceil(n / num_workers)
-        ranges = [(w * chunk, min((w + 1) * chunk, n))
-                  for w in range(num_workers) if w * chunk < n]
-        with ThreadPoolExecutor(max_workers=len(ranges)) as ex:
-            futures = [ex.submit(_search_chunk, client, col, vectors, s, e, top_k, vector_mode)
-                       for s, e in ranges]
-            results = []
-            for f in futures:
-                results.extend(f.result())
+    model_safe = model_id.replace("/", "_")
+    prefix = f"{model_safe}_{vector_mode}_milvus_"
 
-    elapsed = time.time() - t0
-    qps = n / elapsed if elapsed > 0 else 0.0
-    return results, qps
+    # (timestamp, filename, download_url, is_rank0)
+    candidates: list[tuple[str, str, str, bool]] = []
+    for entry in entries:
+        name: str = entry["name"]
+        if not name.startswith(prefix) or not name.endswith(".json"):
+            continue
+        rest = name[len(prefix):-5]
+        if re.match(r"^\d{8}_\d{6}$", rest):
+            candidates.append((rest, name, entry["download_url"], False))
+        elif rest.startswith("rank0_") and re.match(r"^\d{8}_\d{6}$", rest[6:]):
+            candidates.append((rest[6:], name, entry["download_url"], True))
+
+    if not candidates:
+        print(f"[baseline] GitHub results에 '{prefix}*.json' 없음", flush=True)
+        return None
+
+    candidates.sort(key=lambda x: (x[0], x[3]), reverse=True)
+    ts, filename, url, _ = candidates[0]
+    print(f"[baseline] GitHub 최신: {filename}", flush=True)
+
+    req2 = urllib.request.Request(url, headers=headers)
+    try:
+        with urllib.request.urlopen(req2, timeout=30) as resp:
+            data = json.loads(resp.read())
+    except urllib.error.URLError as e:
+        print(f"[baseline] 다운로드 실패: {e}", flush=True)
+        return None
+
+    if isinstance(data, list):
+        data = data[0]
+    qps = data.get("search_qps")
+    print(f"[baseline] search_qps={qps}", flush=True)
+    return qps
 
 
 # ── 결과 테이블 출력 ──────────────────────────────────────────────────────────
 
-def _print_table(baseline_qps: float | None, rows: list[dict]) -> None:
-    print(f"\n{'='*64}")
-    print("  분산처리 QPS 비교  (baseline vs distributed)")
-    print(f"{'='*64}")
+def _print_table(baseline_qps: float | None, ndcg: float | None, rows: list[dict]) -> None:
+    print(f"\n{'='*76}")
+    print("  분산처리 concurrent QPS  (VDBBench 방식)")
+    print(f"{'='*76}")
 
     if baseline_qps:
-        print(f"  baseline (standalone, replica=1, workers=1): {baseline_qps:.1f} q/s")
-        print()
+        print(f"  baseline (runner.py standalone sequential): {baseline_qps:.1f} q/s")
+    if ndcg is not None:
+        print(f"  NDCG@10 (sequential, replica=1): {ndcg:.4f}")
+    print()
 
-    print(f"  {'replica':>7} {'workers':>7} | {'qps':>8} {'vs base':>8} {'NDCG@10':>8}")
-    print("  " + "-" * 46)
+    print(f"  {'replica':>7} {'workers':>7} | {'qps':>8} {'vs base':>8} "
+          f"{'p50ms':>7} {'p95ms':>7} {'p99ms':>7}")
+    print("  " + "-" * 60)
     for r in rows:
-        ratio = f"{r['search_qps']/baseline_qps:.2f}x" if baseline_qps else "-"
+        qps = r.get("search_qps")
+        if qps is None:
+            qps_str, ratio = "N/A", "-"
+        else:
+            qps_str = f"{qps:.1f}"
+            ratio = f"{qps/baseline_qps:.2f}x" if baseline_qps else "-"
+        p50 = r.get("p50_ms", "-")
+        p95 = r.get("p95_ms", "-")
+        p99 = r.get("p99_ms", "-")
         print(f"  {r['replica_number']:>7} {r['search_workers']:>7} | "
-              f"{r['search_qps']:>8.1f} {ratio:>8} {r.get('ndcg_at_10', 0):>8.4f}")
-    print("=" * 64)
+              f"{qps_str:>8} {ratio:>8} {str(p50):>7} {str(p95):>7} {str(p99):>7}")
+    print("=" * 76)
 
 
 # ── 메인 ──────────────────────────────────────────────────────────────────────
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Milvus 분산처리 QPS 비교 테스트")
-    ap.add_argument("--milvus-uri",   default=os.getenv("MILVUS_URI", "http://localhost:19530"))
-    ap.add_argument("--data-root",    default=os.getenv("DATA_ROOT", "/workspace/datasets"))
-    ap.add_argument("--model",        default=os.getenv("MODEL_ID", "BAAI/bge-m3"))
-    ap.add_argument("--vector-mode",  default=os.getenv("VECTOR_MODE", "dense"),
+    ap = argparse.ArgumentParser(description="Milvus 분산처리 concurrent QPS 비교 테스트")
+    ap.add_argument("--milvus-uri",  default=os.getenv("MILVUS_URI", "http://localhost:19530"))
+    ap.add_argument("--data-root",   default=os.getenv("DATA_ROOT", "/workspace/datasets"))
+    ap.add_argument("--model",       default=os.getenv("MODEL_ID", "BAAI/bge-m3"))
+    ap.add_argument("--vector-mode", default=os.getenv("VECTOR_MODE", "dense"),
                     choices=["dense", "sparse", "colbert"])
-    ap.add_argument("--batch-size",   type=int, default=int(os.getenv("BATCH_SIZE", "16")))
-    ap.add_argument("--replicas",     type=int, nargs="+", default=[1, 2],
+    ap.add_argument("--batch-size",  type=int, default=int(os.getenv("BATCH_SIZE", "16")))
+    ap.add_argument("--replicas",    type=int, nargs="+", default=[1, 2],
                     metavar="N", help="테스트할 replica_number 목록 (예: 1 2 4)")
-    ap.add_argument("--workers",      type=int, nargs="+", default=[1, 2, 4],
-                    metavar="N", help="동시 검색 스레드 수 목록 (예: 1 2 4 8)")
-    ap.add_argument("--baseline",     default=None,
+    ap.add_argument("--workers",     type=int, nargs="+", default=[1, 2, 4],
+                    metavar="N", help="동시 클라이언트 수 목록 (예: 1 2 4 8)")
+    ap.add_argument("--duration",    type=int, default=int(os.getenv("SEARCH_DURATION", "30")),
+                    help="concurrent 측정 지속 시간(초, default=30)")
+    ap.add_argument("--baseline",    default=None,
                     help="베이스라인 summary.json 경로 (비교 출력용, 선택)")
-    ap.add_argument("--out",          default="/workspace/reports/dist")
+    ap.add_argument("--out",         default="/workspace/reports/dist")
     args = ap.parse_args()
 
     os.makedirs(args.out, exist_ok=True)
 
-    # ── 베이스라인 로드 (비교용) ────────────────────────────────────────────
+    # ── 베이스라인 로드 ──────────────────────────────────────────────────────
     baseline_qps: float | None = None
-    if args.baseline and os.path.exists(args.baseline):
-        with open(args.baseline, encoding="utf-8") as f:
-            bl = json.load(f)
-        if isinstance(bl, list):
-            bl = bl[0]
-        baseline_qps = bl.get("search_qps")
-        print(f"[baseline] {args.baseline}  search_qps={baseline_qps}", flush=True)
+    if args.baseline:
+        if os.path.exists(args.baseline):
+            with open(args.baseline, encoding="utf-8") as f:
+                bl = json.load(f)
+            if isinstance(bl, list):
+                bl = bl[0]
+            baseline_qps = bl.get("search_qps")
+            print(f"[baseline] {args.baseline}  search_qps={baseline_qps}", flush=True)
+        else:
+            print(f"[baseline] 파일 없음: {args.baseline}", flush=True)
+    else:
+        baseline_qps = _fetch_baseline_from_github(args.model, args.vector_mode)
 
-    # ── 컬렉션 이름 (runner.py 와 동일 규칙) ───────────────────────────────
+    # ── 컬렉션 확인 ──────────────────────────────────────────────────────────
     col = _safe_name(args.model) + f"_{args.vector_mode}"
     print(f"[설정] uri={args.milvus_uri}  col={col}", flush=True)
-    print(f"       replicas={args.replicas}  workers={args.workers}", flush=True)
+    print(f"       replicas={args.replicas}  workers={args.workers}  duration={args.duration}s",
+          flush=True)
 
-    from pymilvus import MilvusClient
-    client = MilvusClient(uri=args.milvus_uri, timeout=300)
+    store = MilvusStore(uri=args.milvus_uri)
 
-    if not client.has_collection(col):
-        print(f"[ERROR] 컬렉션 '{col}' 없음. 먼저 runner.py 로 baseline을 실행하세요.", flush=True)
+    if not store.has_collection(col):
+        print(f"[ERROR] 컬렉션 '{col}' 없음. 먼저 runner.py 로 baseline을 실행하세요.",
+              flush=True)
         raise SystemExit(1)
 
-    n_docs = int(client.get_collection_stats(col).get("row_count", 0))
-    print(f"[컬렉션] {col}  docs={n_docs:,}", flush=True)
+    print(f"[컬렉션] {col}  docs={store.collection_size(col):,}", flush=True)
 
-    # ── 쿼리 인코딩 (1회만) ────────────────────────────────────────────────
+    # ── 쿼리 인코딩 (1회) ────────────────────────────────────────────────────
     print(f"[데이터] {args.data_root}")
     _, queries, qrels = load_from_dir(args.data_root)
-    q_ids = list(queries.keys())
+    q_ids   = list(queries.keys())
     q_texts = [queries[qid] for qid in q_ids]
     print(f"  queries={len(q_ids):,}", flush=True)
 
@@ -176,13 +207,23 @@ def main() -> None:
     gc.collect()
     model.close()
 
-    # ── replica × workers 조합 측정 ────────────────────────────────────────
+    # ── NDCG 측정 (품질 검증, 1회) ───────────────────────────────────────────
+    print("\n[NDCG] sequential 검색으로 품질 측정 (replica=1)...", flush=True)
+    store._client.load_collection(col, replica_number=1)
+    raw = store.search_batch(col, q_embs, top_k=100, vector_mode=args.vector_mode)
+    run_ndcg = {q_ids[i]: {doc_id: score for doc_id, score in hits}
+                for i, hits in enumerate(raw)}
+    ndcg_metrics = evaluate(run_ndcg, qrels)
+    ndcg_val = ndcg_metrics.get("ndcg_at_10")
+    print(f"  NDCG@10={ndcg_val:.4f}", flush=True)
+
+    # ── replica × workers concurrent QPS 측정 ────────────────────────────────
     rows: list[dict] = []
 
     for replica in args.replicas:
         print(f"\n[load] replica_number={replica}  ...", flush=True)
-        client.release_collection(col)
-        client.load_collection(col, replica_number=replica)
+        store._client.release_collection(col)
+        store._client.load_collection(col, replica_number=replica)
         print(f"  load 완료", flush=True)
 
         for workers in args.workers:
@@ -193,35 +234,48 @@ def main() -> None:
                     rows.append(json.load(f))
                 continue
 
-            print(f"  검색: replica={replica}  workers={workers} ...", flush=True)
-            raw, qps = run_search(client, col, q_embs, top_k=100,
-                                  vector_mode=args.vector_mode, num_workers=workers)
+            print(f"  측정: replica={replica}  workers={workers}  {args.duration}s ...",
+                  flush=True)
+            stats = store.search_concurrent(
+                col, q_embs, top_k=100,
+                vector_mode=args.vector_mode,
+                concurrency=workers,
+                duration_sec=args.duration,
+            )
 
-            run = {q_ids[i]: {doc_id: score for doc_id, score in hits}
-                   for i, hits in enumerate(raw)}
-            metrics = evaluate(run, qrels)
+            qps  = stats.get("qps")
+            p50  = stats.get("p50_ms")
+            p95  = stats.get("p95_ms")
+            p99  = stats.get("p99_ms")
+
+            if qps is not None:
+                print(f"    → {qps:.1f} q/s  p50={p50}ms  p95={p95}ms  p99={p99}ms",
+                      flush=True)
+            else:
+                print(f"    → {stats.get('note', '결과없음')}", flush=True)
 
             result = {
                 "model":          args.model,
                 "vector_mode":    args.vector_mode,
                 "replica_number": replica,
                 "search_workers": workers,
-                "search_qps":     round(qps, 1),
+                "search_qps":     qps,
                 "baseline_qps":   baseline_qps,
-                **metrics,
+                "p50_ms":         p50,
+                "p95_ms":         p95,
+                "p99_ms":         p99,
+                **ndcg_metrics,
             }
             with open(ckpt, "w", encoding="utf-8") as f:
                 json.dump(result, f, ensure_ascii=False, indent=2)
             rows.append(result)
-            print(f"    → {qps:.1f} q/s  NDCG@10={metrics.get('ndcg_at_10', 0):.4f}",
-                  flush=True)
 
-    # ── 요약 저장 + 비교 출력 ──────────────────────────────────────────────
+    # ── 요약 저장 + 비교 출력 ────────────────────────────────────────────────
     summary = os.path.join(args.out, "dist_summary.json")
     with open(summary, "w", encoding="utf-8") as f:
         json.dump(rows, f, ensure_ascii=False, indent=2)
 
-    _print_table(baseline_qps, rows)
+    _print_table(baseline_qps, ndcg_val, rows)
     print(f"\n[저장] {summary}")
 
 

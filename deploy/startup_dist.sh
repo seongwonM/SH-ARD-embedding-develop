@@ -172,26 +172,15 @@ DATA_DIR="/tmp/latest/data"
 REPORTS_PATH="/workspace/reports/dist_${MODEL_SAFE:-all}${MODE_SUFFIX:-}"
 mkdir -p "${REPORTS_PATH}"
 
-# BASELINE_JSON 미설정 시 startup.sh 결과 파일에서 자동 탐색
-# startup.sh 결과: NODE_RANK 없으면 suffix 없음, NODE_RANK=0이면 _rank0
-if [ -z "${BASELINE_JSON:-}" ]; then
-    _BL_BASE="/workspace/reports/${MODEL_SAFE:-all}${MODE_SUFFIX:-}_milvus"
-    if [ -f "${_BL_BASE}/summary.json" ]; then
-        BASELINE_JSON="${_BL_BASE}/summary.json"
-    elif [ -f "${_BL_BASE}_rank0/summary.json" ]; then
-        BASELINE_JSON="${_BL_BASE}_rank0/summary.json"
-    fi
-    [ -n "${BASELINE_JSON:-}" ] && echo "[baseline] 자동 감지: ${BASELINE_JSON}"
-fi
-
 python -m bench.dist_bench \
-    --milvus-uri "http://localhost:19530" \
-    --data-root  "${DATA_DIR}" \
-    --model      "${MODEL_ID:-BAAI/bge-m3}" \
+    --milvus-uri  "http://localhost:19530" \
+    --data-root   "${DATA_DIR}" \
+    --model       "${MODEL_ID:-BAAI/bge-m3}" \
     --vector-mode "${VECTOR_MODE:-dense}" \
     --batch-size  "${BATCH_SIZE:-16}" \
     --replicas    ${REPLICAS:-1 2} \
     --workers     ${WORKERS:-1 2 4} \
+    --duration    "${SEARCH_DURATION:-30}" \
     ${BASELINE_JSON:+--baseline "${BASELINE_JSON}"} \
     --out "${REPORTS_PATH}"
 

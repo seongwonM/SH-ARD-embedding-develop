@@ -78,26 +78,35 @@ class EmbeddingModel:
     def dim(self) -> int:
         return self._dim
 
-    def encode_docs(self, texts: list[str], batch_size: int) -> np.ndarray:
-        raw = self._model.encode(
-            texts,
-            batch_size=batch_size,
-            show_progress_bar=False,
-            normalize_embeddings=True,
-        )
+    def _encode_multi_gpu(self, texts: list[str], batch_size: int,
+                          normalize: bool = True, prompt_name: str | None = None) -> np.ndarray:
+        import torch
+        n_gpu = torch.cuda.device_count() if torch.cuda.is_available() else 0
+        # encode_multi_process는 prompt_name 미지원 → Qwen3 쿼리는 단일 GPU
+        if n_gpu > 1 and prompt_name is None:
+            pool = self._model.start_multi_process_pool(
+                target_devices=[f"cuda:{i}" for i in range(n_gpu)]
+            )
+            try:
+                raw = self._model.encode_multi_process(
+                    texts, pool, batch_size=batch_size, normalize_embeddings=normalize
+                )
+            finally:
+                self._model.stop_multi_process_pool(pool)
+        else:
+            kwargs: dict = {"batch_size": batch_size, "show_progress_bar": False,
+                            "normalize_embeddings": normalize}
+            if prompt_name:
+                kwargs["prompt_name"] = prompt_name
+            raw = self._model.encode(texts, **kwargs)
         return _to_numpy(raw)
+
+    def encode_docs(self, texts: list[str], batch_size: int) -> np.ndarray:
+        return self._encode_multi_gpu(texts, batch_size, normalize=True)
 
     def encode_queries(self, texts: list[str], batch_size: int) -> np.ndarray:
-        kwargs: dict = {
-            "batch_size":           batch_size,
-            "show_progress_bar":    False,
-            "normalize_embeddings": True,
-        }
-        if self.model_id in _QWEN3_MODELS:
-            kwargs["prompt_name"] = "query"
-
-        raw = self._model.encode(texts, **kwargs)
-        return _to_numpy(raw)
+        prompt = "query" if self.model_id in _QWEN3_MODELS else None
+        return self._encode_multi_gpu(texts, batch_size, normalize=True, prompt_name=prompt)
 
     def close(self) -> None:
         _release_gpu()
@@ -127,8 +136,12 @@ class BGEM3Model:
         use_fp16 = dtype in ("auto", "fp16")
 
         cuda_available = torch.cuda.is_available()
-        devices = ["cuda:0"] if cuda_available else None
-        print(f"[BGEM3] device: {devices}", flush=True)
+        if cuda_available:
+            n_gpu = torch.cuda.device_count()
+            devices = [f"cuda:{i}" for i in range(n_gpu)]
+        else:
+            devices = None
+        print(f"[BGEM3] devices: {devices}", flush=True)
 
         self._model = BGEM3FlagModel(_BGE_M3_ID, use_fp16=use_fp16, devices=devices)
 
