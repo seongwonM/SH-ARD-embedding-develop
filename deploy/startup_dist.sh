@@ -37,8 +37,10 @@ MODE_SUFFIX=${VECTOR_MODE:+_${VECTOR_MODE}}
 MILVUS_DATA="/workspace/milvus_data/dist_${MODEL_SAFE:-default}${MODE_SUFFIX:-}"
 
 _NODE_RANK="${NODE_RANK:-}"
-_PRIMARY_ADDR="${PRIMARY_ADDR%%/*}"    # CIDR 제거 (10.x.x.x/24 → 10.x.x.x)
-_NODE_ADDR="${NODE_ADDR%%/*}"          # CIDR 제거
+_PRIMARY_ADDR="${PRIMARY_ADDR:-}"
+_PRIMARY_ADDR="${_PRIMARY_ADDR%%/*}"   # CIDR 제거 (10.x.x.x/24 → 10.x.x.x)
+_NODE_ADDR="${NODE_ADDR:-}"
+_NODE_ADDR="${_NODE_ADDR%%/*}"         # CIDR 제거
 _NODE_ADDR="${_NODE_ADDR:-localhost}"
 
 if [ -z "$_NODE_RANK" ]; then
