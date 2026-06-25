@@ -190,6 +190,42 @@ else
     sleep infinity
 fi
 
+# ── CUDA 장치 검증 (coordinator / standalone 만 도달) ────────────────────────
+# nvidia-smi가 보고하는 GPU 목록 중 실제로 접근 가능한 것만 선별.
+# 각 GPU를 독립 서브프로세스(CUDA_VISIBLE_DEVICES=N)로 검증해 _check_capability
+# 교차 오염 없이 broken GPU를 제외한다.
+if [ -z "${CUDA_VISIBLE_DEVICES:-}" ]; then
+    _GPU_INDICES=$(nvidia-smi --query-gpu=index --format=csv,noheader 2>/dev/null | tr -d ' ' | tr '\n' ' ')
+    if [ -n "$_GPU_INDICES" ]; then
+        _VALID_GPUS=$(python3 - $_GPU_INDICES << 'PYEOF'
+import subprocess, sys, concurrent.futures, os
+
+def _test(idx):
+    r = subprocess.run(
+        ['python3', '-c',
+         'import torch,sys; assert torch.cuda.is_available(); '
+         'torch.zeros(1, device="cuda:0"); sys.exit(0)'],
+        env={**os.environ, 'CUDA_VISIBLE_DEVICES': str(idx)},
+        capture_output=True, timeout=60,
+    )
+    return str(idx) if r.returncode == 0 else None
+
+indices = sys.argv[1:]
+with concurrent.futures.ThreadPoolExecutor(max_workers=len(indices)) as ex:
+    results = list(ex.map(_test, indices))
+print(','.join(r for r in results if r is not None))
+PYEOF
+        )
+        if [ -n "$_VALID_GPUS" ]; then
+            export CUDA_VISIBLE_DEVICES="$_VALID_GPUS"
+            echo "[CUDA] 유효 GPU: ${CUDA_VISIBLE_DEVICES}"
+        else
+            export CUDA_VISIBLE_DEVICES=""
+            echo "[CUDA] 접근 가능한 GPU 없음 — CPU 사용"
+        fi
+    fi
+fi
+
 # ── 데이터 경로 ───────────────────────────────────────────────────────────────
 DATA_DIR="/tmp/latest/data"
 [ ! -f "${DATA_DIR}/corpus_all.parquet" ] && DATA_DIR="/workspace/datasets"
