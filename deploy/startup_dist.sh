@@ -14,7 +14,6 @@
 #   WORKER_WAIT_SEC  — coordinator가 worker 등록을 기다리는 초 (default: 30)
 #   BASELINE_JSON    — baseline summary.json 경로 (비교 출력용, 선택)
 #   GH_TOKEN         — GitHub push 토큰 (선택)
-set -euo pipefail
 
 REPO=https://github.com/seongwonM/SH-ARD-embedding-develop.git
 if [ -n "${GH_TOKEN:-}" ]; then
@@ -23,12 +22,27 @@ else
     TARGET="$REPO"
 fi
 
-if rm -rf /tmp/latest && git clone --depth=1 "$TARGET" /tmp/latest 2>&1; then
+# ── 자기 업데이트 ──────────────────────────────────────────────────────────────
+# 이미지에 baked-in된 스크립트는 낡을 수 있다.
+# git에서 최신 startup_dist.sh를 받아 exec 하면 이미지 캐시와 무관하게 항상 최신 버전 실행.
+# _STARTUP_DIST_UPDATED=1 이면 이미 재실행된 것이므로 skip.
+if [ "${_STARTUP_DIST_UPDATED:-0}" != "1" ]; then
+    if rm -rf /tmp/latest && git clone --depth=1 "$TARGET" /tmp/latest 2>&1; then
+        echo "[startup] 코드 수신 완료 — 최신 startup_dist.sh 로 재실행"
+        export _STARTUP_DIST_UPDATED=1
+        exec bash /tmp/latest/deploy/startup_dist.sh
+    else
+        echo "[startup] git clone 실패 — 빌드된 코드로 실행"
+        mkdir -p /tmp/latest/bench
+    fi
+    export _STARTUP_DIST_UPDATED=1
+fi
+
+set -euo pipefail
+
+# bench/ 업데이트 (자기 업데이트 경로에서는 클론이 이미 완료됨)
+if [ -d /tmp/latest/bench ]; then
     cp -rf /tmp/latest/bench /app/
-    echo "[startup] 코드 업데이트 완료"
-else
-    echo "[startup] git clone 실패 — 빌드된 코드로 실행"
-    mkdir -p /tmp/latest
 fi
 
 # ── 환경변수 ──────────────────────────────────────────────────────────────────
@@ -55,8 +69,6 @@ echo "[milvus] 모드: $_MODE (NODE_RANK=${_NODE_RANK:-unset})"
 mkdir -p "${MILVUS_DATA}/etcd" "${MILVUS_DATA}/woodpecker" "${MILVUS_DATA}/local"
 
 # ── Milvus config 생성 ────────────────────────────────────────────────────────
-# startup.sh 와 동일하게 /etc/milvus/configs/milvus.yaml 에 직접 씀
-# (MILVUSCONF=/etc/milvus/configs 을 써야 Milvus가 config를 정상 로드함)
 python3 - "${MILVUS_DATA}" "${_MODE}" "${_PRIMARY_ADDR}" << 'PYEOF'
 import yaml, copy, sys
 
@@ -112,7 +124,7 @@ PYEOF
 if [ "$_MODE" = "coordinator" ]; then
     python3 - "${_NODE_ADDR}" << 'PYEOF2'
 import yaml, sys
-node_addr = sys.argv[1].split('/')[0]  # CIDR 표기 제거
+node_addr = sys.argv[1].split('/')[0]
 try:
     with open('/etc/milvus/configs/embedEtcd.yaml') as f:
         cfg = yaml.safe_load(f) or {}
@@ -191,30 +203,35 @@ else
 fi
 
 # ── CUDA 장치 검증 (coordinator / standalone 만 도달) ────────────────────────
-# nvidia-smi가 보고하는 GPU 목록 중 실제로 접근 가능한 것만 선별.
-# 각 GPU를 독립 서브프로세스(CUDA_VISIBLE_DEVICES=N)로 검증해 _check_capability
-# 교차 오염 없이 broken GPU를 제외한다.
+# nvidia-smi 목록 중 실제 접근 가능한 GPU만 선별.
+# 각 GPU를 격리된 서브프로세스로 검증해 broken GPU 제외.
 if [ -z "${CUDA_VISIBLE_DEVICES:-}" ]; then
-    _GPU_INDICES=$(nvidia-smi --query-gpu=index --format=csv,noheader 2>/dev/null | tr -d ' ' | tr '\n' ' ')
+    _GPU_INDICES=$(nvidia-smi --query-gpu=index --format=csv,noheader 2>/dev/null | tr -d ' \n')
     if [ -n "$_GPU_INDICES" ]; then
-        _VALID_GPUS=$(python3 - $_GPU_INDICES << 'PYEOF'
+        _VALID_GPUS=$(python3 - "${_GPU_INDICES}" << 'PYEOF3'
 import subprocess, sys, concurrent.futures, os
 
 def _test(idx):
-    r = subprocess.run(
-        ['python3', '-c',
-         'import torch,sys; assert torch.cuda.is_available(); '
-         'torch.zeros(1, device="cuda:0"); sys.exit(0)'],
-        env={**os.environ, 'CUDA_VISIBLE_DEVICES': str(idx)},
-        capture_output=True, timeout=60,
-    )
-    return str(idx) if r.returncode == 0 else None
+    try:
+        r = subprocess.run(
+            ['python3', '-c',
+             'import torch,sys; assert torch.cuda.is_available(); '
+             'torch.zeros(1, device="cuda:0"); sys.exit(0)'],
+            env={**os.environ, 'CUDA_VISIBLE_DEVICES': str(idx)},
+            capture_output=True, timeout=90,
+        )
+        return str(idx) if r.returncode == 0 else None
+    except Exception:
+        return None
 
-indices = sys.argv[1:]
-with concurrent.futures.ThreadPoolExecutor(max_workers=len(indices)) as ex:
+indices = sys.argv[1].split(',') if sys.argv[1] else []
+if not indices:
+    print('')
+    sys.exit(0)
+with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, len(indices))) as ex:
     results = list(ex.map(_test, indices))
 print(','.join(r for r in results if r is not None))
-PYEOF
+PYEOF3
         )
         if [ -n "$_VALID_GPUS" ]; then
             export CUDA_VISIBLE_DEVICES="$_VALID_GPUS"
