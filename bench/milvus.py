@@ -46,15 +46,8 @@ class MilvusStore:
         schema.add_field("id",     DataType.INT64,  is_primary=True)
         schema.add_field("doc_id", DataType.VARCHAR, max_length=512)
 
-        index_params = MilvusClient.prepare_index_params()
-
         if vector_mode == "sparse":
             schema.add_field("vector", DataType.SPARSE_FLOAT_VECTOR)
-            index_params.add_index(
-                field_name="vector",
-                index_type="SPARSE_INVERTED_INDEX",
-                metric_type="IP",
-            )
         elif vector_mode == "colbert":
             # Array of Structs: 문서당 토큰 임베딩 리스트 → MAX_SIM_COSINE
             struct_schema = self._client.create_struct_field_schema()
@@ -66,24 +59,14 @@ class MilvusStore:
                 struct_schema=struct_schema,
                 max_capacity=512,
             )
-            index_params.add_index(
-                field_name="colbert_embs[emb]",
-                index_type="FLAT",        # AUTOINDEX(HNSW)는 토큰벡터 전체에 그래프 빌드 → OOM
-                metric_type="MAX_SIM_COSINE",
-            )
         else:  # dense
             schema.add_field("vector", DataType.FLOAT_VECTOR, dim=dim)
-            index_params.add_index(
-                field_name="vector",
-                index_type="HNSW",
-                metric_type="COSINE",
-                params={"M": 16, "efConstruction": 100},
-            )
 
+        # 인덱스 파라미터를 전달하지 않아 인서트 중 백그라운드 HNSW 빌드를 방지한다.
+        # 실제 인덱스는 전체 인서트 완료 후 finalize_index에서 한 번에 빌드한다.
         self._client.create_collection(
             collection_name=name,
             schema=schema,
-            index_params=index_params,
         )
         print(f"  컬렉션 생성: {name}  mode={vector_mode}  dim={dim}", flush=True)
 
@@ -136,6 +119,31 @@ class MilvusStore:
         print(f"  [upload] insert 완료 ({total_inserted + len(batch):,}건)", flush=True)
 
     def finalize_index(self, name: str, vector_mode: str = "dense") -> None:
+        from pymilvus import MilvusClient
+
+        index_params = MilvusClient.prepare_index_params()
+        if vector_mode == "sparse":
+            index_params.add_index(
+                field_name="vector",
+                index_type="SPARSE_INVERTED_INDEX",
+                metric_type="IP",
+            )
+        elif vector_mode == "colbert":
+            index_params.add_index(
+                field_name="colbert_embs[emb]",
+                index_type="AUTOINDEX",
+                metric_type="MAX_SIM_COSINE",
+            )
+        else:
+            index_params.add_index(
+                field_name="vector",
+                index_type="HNSW",
+                metric_type="COSINE",
+                params={"M": 16, "efConstruction": 100},
+            )
+
+        print(f"  인덱스 빌드 중 ({vector_mode})...", flush=True)
+        self._client.create_index(name, index_params)
         self._client.load_collection(name)
         print(f"  인덱스 로드 완료 ({vector_mode})", flush=True)
 
