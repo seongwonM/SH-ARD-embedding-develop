@@ -68,7 +68,7 @@ class MilvusStore:
             )
             index_params.add_index(
                 field_name="colbert_embs[emb]",
-                index_type="AUTOINDEX",
+                index_type="FLAT",        # AUTOINDEX(HNSW)는 토큰벡터 전체에 그래프 빌드 → OOM
                 metric_type="MAX_SIM_COSINE",
             )
         else:  # dense
