@@ -187,6 +187,13 @@ if [ "$_MODE" = "standalone" ] || [ "$_MODE" = "coordinator" ]; then
     echo "[milvus] 준비 완료 (모드: ${_MODE})"
 
     if [ "$_MODE" = "coordinator" ]; then
+        # replica_number=2 지원: StreamingNode #2 기동 (같은 pod, 로컬 디스크 공유)
+        # standalone에는 StreamingNode #1이 내장되어 있으므로 하나 더 띄우면 currentStreamingNode=2 가 됨.
+        MILVUSCONF=/etc/milvus/configs \
+            milvus run streaming >"${MILVUS_DATA}/streaming2.log" 2>&1 &
+        echo "[milvus] StreamingNode #2 기동 중..."
+        sleep 10
+
         echo "[milvus] worker QueryNode 등록 대기 ${WORKER_WAIT_SEC:-30}초..."
         sleep "${WORKER_WAIT_SEC:-30}"
     fi
