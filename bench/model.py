@@ -81,6 +81,7 @@ class EmbeddingModel:
             pass
 
         self._dim: int = self._model.encode(["dim probe"], show_progress_bar=False).shape[1]
+        self._pool: dict | None = None  # 다중 GPU pool (lazy init, close()까지 유지)
 
     @property
     def dim(self) -> int:
@@ -90,21 +91,26 @@ class EmbeddingModel:
     def actual_dtype(self) -> str:
         return self._actual_dtype
 
+    def _get_pool(self) -> "dict | None":
+        """다중 GPU pool을 lazy-init해서 반환. 단일 GPU 또는 CPU면 None."""
+        import torch
+        if self._pool is not None:
+            return self._pool
+        n_gpu = torch.cuda.device_count() if torch.cuda.is_available() else 0
+        if n_gpu > 1:
+            devices = [f"cuda:{i}" for i in range(n_gpu)]
+            print(f"  [multi-GPU] pool 생성: {devices}", flush=True)
+            self._pool = self._model.start_multi_process_pool(target_devices=devices)
+        return self._pool
+
     def _encode_multi_gpu(self, texts: list[str], batch_size: int,
                           normalize: bool = True, prompt_name: str | None = None) -> np.ndarray:
-        import torch
-        n_gpu = torch.cuda.device_count() if torch.cuda.is_available() else 0
-        # encode_multi_process는 prompt_name 미지원 → Qwen3 쿼리는 단일 GPU
-        if n_gpu > 1 and prompt_name is None:
-            pool = self._model.start_multi_process_pool(
-                target_devices=[f"cuda:{i}" for i in range(n_gpu)]
+        # encode_multi_process는 prompt_name 미지원 → Qwen3 쿼리는 단일 GPU로 fallback
+        pool = self._get_pool() if prompt_name is None else None
+        if pool is not None:
+            raw = self._model.encode_multi_process(
+                texts, pool, batch_size=batch_size, normalize_embeddings=normalize
             )
-            try:
-                raw = self._model.encode_multi_process(
-                    texts, pool, batch_size=batch_size, normalize_embeddings=normalize
-                )
-            finally:
-                self._model.stop_multi_process_pool(pool)
         else:
             kwargs: dict = {"batch_size": batch_size, "show_progress_bar": False,
                             "normalize_embeddings": normalize}
@@ -121,6 +127,9 @@ class EmbeddingModel:
         return self._encode_multi_gpu(texts, batch_size, normalize=True, prompt_name=prompt)
 
     def close(self) -> None:
+        if self._pool is not None:
+            self._model.stop_multi_process_pool(self._pool)
+            self._pool = None
         _release_gpu()
         del self._model
         gc.collect()
