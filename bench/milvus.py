@@ -214,8 +214,31 @@ class MilvusStore:
         return all_results
 
     def load_collection(self, name: str, replica_number: int = 1, timeout: int = 600) -> None:
-        """컬렉션 로드. 대용량 HNSW는 수 분 소요될 수 있으므로 timeout 넉넉히."""
-        self._client.load_collection(name, replica_number=replica_number, timeout=timeout)
+        """컬렉션 로드.
+
+        distributed 모드에서 worker QueryNode의 etcd 세션이 stale해지면
+        'node not match' 에러가 발생한다. release 후 60s 대기(etcd TTL)하면
+        routing table이 갱신되어 재시도 성공하는 경우가 많다.
+        """
+        import time
+        for attempt in range(3):
+            try:
+                self._client.load_collection(name, replica_number=replica_number, timeout=timeout)
+                return
+            except Exception as e:
+                if "node not match" in str(e) and attempt < 2:
+                    print(
+                        f"  [load] QueryNode routing 오류 (attempt {attempt+1}/3) — "
+                        f"release 후 60s 대기 (etcd TTL 만료 대기)...",
+                        flush=True,
+                    )
+                    try:
+                        self._client.release_collection(name)
+                    except Exception:
+                        pass
+                    time.sleep(60)
+                    continue
+                raise
 
     def search_concurrent(
         self,

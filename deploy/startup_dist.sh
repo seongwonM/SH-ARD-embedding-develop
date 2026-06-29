@@ -99,6 +99,10 @@ common = {
         'growingSegmentBytesHwmThreshold': 0.08,
         'growingSegmentBytesLwmThreshold': 0.04,
     }},
+    # etcd session TTL 연장: embedded etcd가 인덱싱 부하를 받을 때 worker의
+    # heartbeat이 밀려 세션이 만료되고 'node not match' 에러가 발생하는 것을 방지.
+    'metastore': {'type': 'etcd'},
+    'etcd': {'session': {'ttl': 120}},   # default 60s → 120s
     'rootCoord': {'port': 53100}, 'dataCoord': {'port': 13333},
     'queryCoord': {'port': 19531}, 'queryNode': {'port': 21123},
     'dataNode': {'port': 21124},
