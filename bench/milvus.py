@@ -200,6 +200,7 @@ class MilvusStore:
                     search_params={"metric_type": "COSINE", "params": {"ef": 100}},
                     limit=top_k,
                     output_fields=["doc_id"],
+                    timeout=300,
                 )
 
             for hits in results:
@@ -211,6 +212,10 @@ class MilvusStore:
                 print(f"  검색 진행: {end:,}/{n:,}  ({elapsed:.0f}s, {qps:.1f} q/s)", flush=True)
 
         return all_results
+
+    def load_collection(self, name: str, replica_number: int = 1, timeout: int = 600) -> None:
+        """컬렉션 로드. 대용량 HNSW는 수 분 소요될 수 있으므로 timeout 넉넉히."""
+        self._client.load_collection(name, replica_number=replica_number, timeout=timeout)
 
     def search_concurrent(
         self,

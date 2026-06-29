@@ -215,7 +215,9 @@ def main() -> None:
 
     # ── NDCG 측정 (품질 검증, 1회) ───────────────────────────────────────────
     print("\n[NDCG] sequential 검색으로 품질 측정 (replica=1)...", flush=True)
-    store._client.load_collection(col, replica_number=1)
+    print("  [load] 컬렉션 메모리 로드 중 (대용량 HNSW는 수 분 소요)...", flush=True)
+    store.load_collection(col, replica_number=1, timeout=600)
+    print("  [load] 완료", flush=True)
     raw = store.search_batch(col, q_embs, top_k=100, vector_mode=args.vector_mode)
     run_ndcg = {q_ids[i]: {doc_id: score for doc_id, score in hits}
                 for i, hits in enumerate(raw)}
@@ -229,7 +231,7 @@ def main() -> None:
     for replica in args.replicas:
         print(f"\n[load] replica_number={replica}  ...", flush=True)
         store._client.release_collection(col)
-        store._client.load_collection(col, replica_number=replica)
+        store.load_collection(col, replica_number=replica, timeout=600)
         print(f"  load 완료", flush=True)
 
         for workers in args.workers:
