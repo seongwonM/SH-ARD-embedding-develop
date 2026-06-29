@@ -231,7 +231,17 @@ def main() -> None:
     for replica in args.replicas:
         print(f"\n[load] replica_number={replica}  ...", flush=True)
         store._client.release_collection(col)
-        store.load_collection(col, replica_number=replica, timeout=600)
+        try:
+            store.load_collection(col, replica_number=replica, timeout=600)
+        except Exception as e:
+            if "resource insufficient" in str(e) or "service resource" in str(e):
+                print(
+                    f"  [스킵] replica={replica} — StreamingNode 부족으로 불가 "
+                    f"(currentStreamingNode < {replica}). replica=1 결과만 사용.",
+                    flush=True,
+                )
+                continue
+            raise
         print(f"  load 완료", flush=True)
 
         for workers in args.workers:
