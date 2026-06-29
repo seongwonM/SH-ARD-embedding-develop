@@ -206,7 +206,7 @@ fi
 # nvidia-smi 목록 중 실제 접근 가능한 GPU만 선별.
 # 각 GPU를 격리된 서브프로세스로 검증해 broken GPU 제외.
 if [ -z "${CUDA_VISIBLE_DEVICES:-}" ]; then
-    _GPU_INDICES=$(nvidia-smi --query-gpu=index --format=csv,noheader 2>/dev/null | tr -d ' \n')
+    _GPU_INDICES=$(nvidia-smi --query-gpu=index --format=csv,noheader 2>/dev/null | tr -d ' ' | tr '\n' ',' | sed 's/,$//')
     if [ -n "$_GPU_INDICES" ]; then
         _VALID_GPUS=$(python3 - "${_GPU_INDICES}" << 'PYEOF3'
 import subprocess, sys, concurrent.futures, os
