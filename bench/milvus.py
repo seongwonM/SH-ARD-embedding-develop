@@ -14,7 +14,7 @@ from __future__ import annotations
 import gc
 import math
 
-_ENCODE_CHUNK = 2_000
+_ENCODE_CHUNK = 500    # ColBERT 문서당 수백KB → 작게 유지해야 Milvus growing segment OOM 방지
 _INSERT_BATCH = 64
 
 

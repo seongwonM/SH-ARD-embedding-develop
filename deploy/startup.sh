@@ -80,7 +80,7 @@ overrides = {
         },
     },
     'rootCoord': {'port': 53100},
-    'dataCoord': {'port': 13333},
+    'dataCoord': {'port': 13333, 'segment': {'maxSize': 128}},
     'queryCoord': {'port': 19531},
     'queryNode': {'port': 21123},
     'indexNode': {'port': 21121},
